@@ -23,6 +23,11 @@ jobs:
           git remote add upstream "$UPSTREAM_REPO"
           git fetch upstream
 
+      - name: Configure git
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: Merge
         run: |
           git merge upstream/$UPSTREAM_BRANCH --message "Merge upstream changes from repo $UPSTREAM_REPO branch $UPSTREAM_BRANCH"
