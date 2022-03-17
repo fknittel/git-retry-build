@@ -1,0 +1,38 @@
+name: build
+
+on:
+  [ push ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup go
+        uses: actions/setup-go@v2
+        with:
+          go-version: '^1.15.15'
+
+      - name: Cache go modules
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Test
+        run: |
+          cd go/src/infra/tools/git
+          go test
+      - name: Build
+        run: |
+          cd go/src/infra/tools/git
+          go build
+
+      - name: Test executable
+        run: |
+          ./go/src/infra/tools/git/git version
