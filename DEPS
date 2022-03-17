@@ -39,7 +39,7 @@ deps = {
 
   "infra/go/src/go.chromium.org/luci":
      "{chromium_git}/infra/luci/luci-go@" +
-     "dd0605c5d51011d9f399bc2699c02e9fba70e967",
+     "9f81d8245fbce0cafbe24b2d8f445c43422a55ff",
 
   "infra/go/src/go.chromium.org/chromiumos/config":
      "{chromium_git}/chromiumos/config@" +
@@ -47,7 +47,7 @@ deps = {
 
   "infra/go/src/go.chromium.org/chromiumos/infra/proto":
      "{chromium_git}/chromiumos/infra/proto@" +
-     "be867595244e73044d7e49dab05e11821b465098",
+     "0540702b7c7439ec74c8170be9f26b0362e5f9d7",
 
   # Appengine third_party DEPS
   "infra/appengine/third_party/bootstrap":
