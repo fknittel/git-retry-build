@@ -1,0 +1,34 @@
+name: merge-upstream
+
+on:
+  schedule:
+    - cron: '0 9 * * 0'
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+
+    env:
+      UPSTREAM_REPO: https://chromium.googlesource.com/infra/infra
+      UPSTREAM_BRANCH: main
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Configure upstream as temporary remote
+        run: |
+          git remote add upstream "$UPSTREAM_REPO"
+          git fetch upstream
+
+      - name: Merge
+        run: |
+          git merge upstream/$UPSTREAM_BRANCH --message "Merge upstream changes from repo $UPSTREAM_REPO branch $UPSTREAM_BRANCH"
+
+      - name: Cleanup temporary upstream remote
+        run: |
+          git remote rm upstream
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v3
