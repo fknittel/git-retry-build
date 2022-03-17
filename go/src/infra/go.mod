@@ -11,9 +11,13 @@ require (
 	cloud.google.com/go/errorreporting v0.1.0
 	cloud.google.com/go/firestore v1.5.0
 	cloud.google.com/go/iam v0.2.0 // indirect
+	cloud.google.com/go/monitoring v1.4.0 // indirect
+	cloud.google.com/go/profiler v0.2.0 // indirect
 	cloud.google.com/go/pubsub v1.17.0
+	cloud.google.com/go/secretmanager v1.3.0 // indirect
 	cloud.google.com/go/spanner v1.25.0
 	cloud.google.com/go/storage v1.21.0
+	cloud.google.com/go/trace v1.2.0 // indirect
 	github.com/DATA-DOG/go-sqlmock v1.5.0
 	github.com/PaesslerAG/jsonpath v0.1.1
 	github.com/StackExchange/wmi v1.2.1
@@ -49,6 +53,7 @@ require (
 	github.com/linkedin/goavro/v2 v2.11.0
 	github.com/maruel/subcommands v1.1.1
 	github.com/mattes/migrate v3.0.1+incompatible
+	github.com/mattn/go-tty v0.0.4 // indirect
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/moby/term v0.0.0-20210619224110-3f7ff695adc6 // indirect
 	github.com/opencontainers/image-spec v1.0.1
@@ -61,8 +66,8 @@ require (
 	github.com/smartystreets/goconvey v1.7.2
 	github.com/waigani/diffparser v0.0.0-20190828052634-7391f219313d
 	go.chromium.org/chromiumos/config/go v0.0.0-20211012171127-50826c369fec
-	go.chromium.org/chromiumos/infra/proto/go v0.0.0-00010101000000-000000000000
-	go.chromium.org/luci v0.0.0-20201029184154-594d11850ebf
+	go.chromium.org/chromiumos/infra/proto/go v0.0.0-20220317154634-0540702b7c74
+	go.chromium.org/luci v0.0.0-20220317064541-9f81d8245fbc
 	go.opencensus.io v0.23.0
 	go.skia.org/infra v0.0.0-20210913170701-f020cec45197
 	golang.org/x/build v0.0.0-20210913192547-14e3e09d6b10
@@ -77,10 +82,10 @@ require (
 	golang.org/x/tools/gopls v0.7.3
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1
 	gonum.org/v1/gonum v0.9.3
-	google.golang.org/api v0.69.0
+	google.golang.org/api v0.70.0
 	google.golang.org/appengine v1.6.7
 	google.golang.org/appengine/v2 v2.0.1
-	google.golang.org/genproto v0.0.0-20220218161850-94dd64e39d7c
+	google.golang.org/genproto v0.0.0-20220222213610-43724f9ea8cf
 	google.golang.org/grpc v1.40.1
 	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.1.0
 	google.golang.org/protobuf v1.27.1
@@ -115,10 +120,3 @@ replace golang.org/x/mobile => golang.org/x/mobile v0.0.0-20170111200746-6f0c9f6
 
 // Version 1.2.0 has a bug: https://github.com/sergi/go-diff/issues/115
 exclude github.com/sergi/go-diff v1.2.0
-
-// Infra modules are included via gclient DEPS.
-replace (
-	go.chromium.org/chromiumos/config/go => ../go.chromium.org/chromiumos/config/go
-	go.chromium.org/chromiumos/infra/proto/go => ../go.chromium.org/chromiumos/infra/proto/go
-	go.chromium.org/luci => ../go.chromium.org/luci
-)
