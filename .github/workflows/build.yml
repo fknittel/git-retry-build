@@ -38,7 +38,7 @@ jobs:
 
       - uses: actions/upload-artifact@v3
         with:
-          name: git
+          name: git-retry
           path: go/src/infra/tools/git/git
 
       - uses: tibdex/github-app-token@v1
