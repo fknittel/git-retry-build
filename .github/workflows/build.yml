@@ -39,3 +39,22 @@ jobs:
       - name: Test executable
         run: |
           ./go/src/infra/tools/git/git version
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: git
+          path: go/src/infra/tools/git/git
+
+      - uses: tibdex/github-app-token@v1
+        id: generate-token
+        with:
+          app_id: ${{ secrets.PULL_REQUEST_APP_ID }}
+          private_key: ${{ secrets.PULL_REQUEST_APP_PRIVATE_KEY }}
+
+      - uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          prerelease: true
+          files: go/src/infra/tools/git/git
+        env:
+          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
