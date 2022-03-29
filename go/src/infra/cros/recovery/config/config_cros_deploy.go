@@ -18,7 +18,8 @@ func crosDeployPlan() *Plan {
 			"Servo has USB-key with require image",
 			"Device is pingable before deploy",
 			"DUT has expected OS version",
-			"DUT has expected test firmware",
+			"DUT has expected dev firmware",
+			"Switch to secure-mode and reboot",
 			"Collect DUT labels",
 			"Deployment checks",
 			"DUT verify",
@@ -55,30 +56,6 @@ func deployActions() map[string]*Action {
 				"Install OS in DEV mode",
 			},
 		},
-		"Cold reset DUT by servo and wait to boot": {
-			Docs: []string{"Verify that device has stable version OS on it and version is match."},
-			Dependencies: []string{
-				"dut_servo_host_present",
-				"servo_state_is_working",
-				"Cold reset DUT by servo",
-				"Wait DUT to be pingable after reset",
-			},
-			ExecName:   "sample_pass",
-			RunControl: 1,
-		},
-		"Cold reset DUT by servo": {
-			Docs: []string{"Verify that device has stable version OS on it and version is match."},
-			Dependencies: []string{
-				"dut_servo_host_present",
-				"servo_state_is_working",
-			},
-			ExecName: "servo_set",
-			ExecExtraArgs: []string{
-				"command:power_state",
-				"string_value:reset",
-			},
-			RunControl: 1,
-		},
 		"DUT has expected OS version": {
 			Docs: []string{"Verify that device has stable version OS on it and version is match."},
 			Dependencies: []string{
@@ -92,7 +69,7 @@ func deployActions() map[string]*Action {
 				"Install OS in DEV mode",
 			},
 		},
-		"DUT has expected test firmware": {
+		"DUT has expected dev firmware": {
 			Docs:         []string{"Verify that FW on the DUT has dev keys."},
 			Dependencies: []string{"cros_ssh"},
 			ExecName:     "cros_has_dev_signed_firmware",
@@ -113,12 +90,13 @@ func deployActions() map[string]*Action {
 				"Disable software-controlled write-protect for 'host'",
 				"Disable software-controlled write-protect for 'ec'",
 			},
-			ExecTimeout: &durationpb.Duration{Seconds: 300},
+			ExecTimeout: &durationpb.Duration{Seconds: 900},
 			ExecName:    "cros_run_firmware_update",
 			ExecExtraArgs: []string{
 				"mode:factory",
 				"force:true",
 				"reboot:by_servo",
+				"updater_timeout:600",
 			},
 		},
 		"Update DUT firmware with factory mode and restart by host": {
@@ -132,19 +110,20 @@ func deployActions() map[string]*Action {
 				"Disable software-controlled write-protect for 'host'",
 				"Disable software-controlled write-protect for 'ec'",
 			},
-			ExecTimeout: &durationpb.Duration{Seconds: 300},
+			ExecTimeout: &durationpb.Duration{Seconds: 900},
 			ExecName:    "cros_run_firmware_update",
 			ExecExtraArgs: []string{
 				"mode:factory",
 				"force:true",
 				"reboot:by_host",
+				"updater_timeout:600",
 			},
 		},
 		"Deployment checks": {
 			Docs: []string{"Run some specif checks as part of deployment."},
 			Dependencies: []string{
 				"Verify battery charging level",
-				"Verify RPM config (not critical)",
+				"Verify RPM config (without battery)",
 				"Verify boot in recovery mode",
 			},
 			ExecName: "sample_pass",
@@ -169,25 +148,44 @@ func deployActions() map[string]*Action {
 		},
 		"Verify boot in recovery mode": {
 			Docs: []string{
-				"TODO: Not implemented yet!",
-				"Allow to fail till it is ready",
+				"Devices deployed with servo in the pools required secure mode need to be able to be boot in recovery mode.",
 			},
-			ExecName:               "sample_fail",
-			AllowFailAfterRecovery: true,
+			Conditions: []string{
+				"Pools required to be in Secure mode",
+			},
+			Dependencies: []string{
+				"dut_servo_host_present",
+				"servo_state_is_working",
+			},
+			ExecName: "cros_verify_boot_in_recovery_mode",
+			ExecExtraArgs: []string{
+				"boot_timeout:480",
+				"boot_interval:10",
+				"halt_timeout:120",
+				"ignore_reboot_failure:false",
+			},
+			ExecTimeout: &durationpb.Duration{Seconds: 900},
+			RecoveryActions: []string{
+				// The only reason why it can fail on good DUT is that USB-key has not good image.
+				"Download stable image to USB-key",
+			},
 		},
-		"Verify RPM config (not critical)": {
+		"Verify RPM config (without battery)": {
 			Docs: []string{
 				"Verify RPM configs and set RPM state",
 				"Not applicable for cr50 servos based on b/205728276",
+				"Action is not critical as it updates own state.",
 			},
 			Conditions: []string{
 				"dut_servo_host_present",
 				"servo_state_is_working",
 				"is_servo_main_ccd_cr50",
 				"has_rpm_info",
+				"No Battery is present on device",
 			},
-			ExecName:    "rpm_audit",
-			ExecTimeout: &durationpb.Duration{Seconds: 600},
+			ExecName:               "rpm_audit",
+			ExecTimeout:            &durationpb.Duration{Seconds: 600},
+			AllowFailAfterRecovery: true,
 		},
 		"DUT verify": {
 			Docs:         []string{"Run all repair critcal actions."},
@@ -199,29 +197,11 @@ func deployActions() map[string]*Action {
 			Dependencies: []string{
 				"Set GBB flags to 0x18 by servo",
 				"Boot DUT from USB in DEV mode",
-				"Device booted from USB-drive",
 				"Run install after boot from USB-drive",
 				"Cold reset DUT by servo and wait to boot",
 				"Wait DUT to be SSHable after reset",
 			},
 			ExecName: "sample_pass",
-		},
-		"Boot DUT from USB in DEV mode": {
-			Docs: []string{
-				"Restart and try to boot from USB-drive",
-				"First boot in dev mode can take time so set boot time to 10 minutes.",
-			},
-			ExecName: "cros_dev_mode_boot_from_servo_usb_drive",
-			ExecExtraArgs: []string{
-				"boot_timeout:600",
-				"retry_interval:2",
-			},
-			ExecTimeout: &durationpb.Duration{Seconds: 900},
-		},
-		"Run install after boot from USB-drive": {
-			Docs:        []string{"Perform install process"},
-			ExecName:    "cros_run_chromeos_install_command_after_boot_usbdrive",
-			ExecTimeout: &durationpb.Duration{Seconds: 1200},
 		},
 		"Clean up": {
 			Docs:         []string{"Verify that device is set to boot in DEV mode and enabled to boot from USB-drive."},

@@ -33,30 +33,35 @@ import (
 //
 type CloserFunc = func(context.Context, error)
 
-// NewMetric creates a new metric.
-func (a *RunArgs) NewMetric(ctx context.Context, kind string) (*metrics.Action, CloserFunc, error) {
+// NewMetric takes a reference to an action and populates it as a new action of kind `kind`.
+// NewMetric mutates its argument action.
+func (a *RunArgs) NewMetric(ctx context.Context, kind string, action *metrics.Action) (CloserFunc, error) {
 	// Keep this function up to date with the call to args.Metrics.Create in recovery.go
 	if a == nil {
-		return nil, nil, errors.Reason("new metrics: run args cannot be nil").Err()
+		return nil, errors.Reason("new metrics: run args cannot be nil").Err()
+	}
+	if action == nil {
+		return nil, errors.Reason("new metrics: action cannot be nil").Err()
 	}
 	dutName := ""
 	if a.DUT != nil {
 		dutName = a.DUT.Name
 	}
 	startTime := time.Now()
-	action := &metrics.Action{
+	*action = metrics.Action{
 		ActionKind:     kind,
 		StartTime:      startTime,
 		SwarmingTaskID: a.SwarmingTaskID,
 		BuildbucketID:  a.BuildbucketID,
 		Hostname:       dutName,
 	}
-	m, c := createMetric(ctx, a.Metrics, action)
-	return m, c, nil
+	c := createMetric(ctx, a.Metrics, action)
+	return c, nil
 }
 
 // CreateMetric creates a metric with an actionKind, and a startTime.
 // It returns an action and a closer function.
+// CreateMetric mutates its argument action.
 //
 // Intended usage:
 //
@@ -65,45 +70,43 @@ func (a *RunArgs) NewMetric(ctx context.Context, kind string) (*metrics.Action, 
 //  Note that it is necessary to explicitly defer evaluation of err to the
 //  end of the function.
 //
-//  action, closer := createMetric(ctx, ...)
+//  closer := createMetric(ctx, ...)
 //  if closer != nil {
 //    defer func() {
 //      closer(ctx, err)
 //    }()
 //  }
 //
-func createMetric(ctx context.Context, m metrics.Metrics, action *metrics.Action) (*metrics.Action, func(context.Context, error)) {
+func createMetric(ctx context.Context, m metrics.Metrics, action *metrics.Action) func(context.Context, error) {
 	if m == nil {
-		return nil, nil
+		return nil
 	}
-	a, err := m.Create(ctx, action)
-	if err != nil {
-		log.Error(ctx, err.Error())
+	if err := m.Create(ctx, action); err != nil {
+		log.Errorf(ctx, err.Error())
 	}
 	closer := func(ctx context.Context, e error) {
 		if m == nil {
-			log.Debug(ctx, "forgivable error while creating metric, nil metrics")
+			log.Debugf(ctx, "Forgivable error while creating metric, nil metrics")
 			return
 		}
-		if a == nil {
-			log.Debug(ctx, "forgivable error while creating metric, nil action")
+		if action == nil {
+			log.Debugf(ctx, "Forgivable error while creating metric, action reference points to nil action")
 			return
 		}
-		a.Status = metrics.ActionStatusUnspecified
+		action.Status = metrics.ActionStatusUnspecified
 		// TODO(gregorynisbet): Consider strategies for multiple fail reasons.
 		if e != nil {
-			log.Debug(ctx, "Updating action %q of kind %q during close failed with reason %q", action.Name, action.ActionKind, e.Error())
-			a.Status = metrics.ActionStatusFail
-			a.FailReason = e.Error()
+			log.Debugf(ctx, "Updating action %q of kind %q during close failed with reason %q", action.Name, action.ActionKind, e.Error())
+			action.Status = metrics.ActionStatusFail
+			action.FailReason = e.Error()
 		} else {
-			a.Status = metrics.ActionStatusSuccess
-			log.Debug(ctx, "Updating action %q of kind %q during close was successful", action.Name, action.ActionKind)
+			action.Status = metrics.ActionStatusSuccess
+			log.Debugf(ctx, "Updating action %q of kind %q during close was successful", action.Name, action.ActionKind)
 		}
-		_, err := m.Update(ctx, a)
-		if err != nil {
-			log.Error(ctx, "Updating action %q during close had error during upload: %s", action.Name, err.Error())
+		if uErr := m.Update(ctx, action); uErr != nil {
+			log.Errorf(ctx, "Updating action %q during close had error during upload: %s", action.Name, uErr.Error())
 		}
 		return
 	}
-	return a, closer
+	return closer
 }

@@ -8,7 +8,6 @@ import functools
 import json
 import logging
 
-from google import protobuf
 from google.appengine.ext import ndb
 from google.protobuf import json_format
 from protorpc import messages
@@ -23,12 +22,10 @@ from components import utils
 import gae_ts_mon
 
 from legacy import api_common
-from go.chromium.org.luci.buildbucket.proto import build_pb2
 from go.chromium.org.luci.buildbucket.proto import builder_pb2
 from go.chromium.org.luci.buildbucket.proto import builds_service_pb2 as rpc_pb2
 from go.chromium.org.luci.buildbucket.proto import common_pb2
 from go.chromium.org.luci.buildbucket.proto import project_config_pb2
-import backfill_tag_index
 import bbutil
 import buildtags
 import config
@@ -86,15 +83,6 @@ class PutRequestMessage(messages.Message):
 class BuildResponseMessage(messages.Message):
   build = messages.MessageField(api_common.BuildMessage, 1)
   error = messages.MessageField(ErrorMessage, 2)
-
-
-class BucketMessage(messages.Message):
-  name = messages.StringField(1, required=True)
-  project_id = messages.StringField(2, required=True)
-  config_file_content = messages.StringField(3)
-  config_file_url = messages.StringField(4)
-  config_file_rev = messages.StringField(5)
-  error = messages.MessageField(ErrorMessage, 10)
 
 
 def parse_v1_tags(v1_tags):
@@ -416,7 +404,7 @@ def catch_errors(fn, response_message_class):
     except errors.Error as ex:
       assert hasattr(response_message_class, 'error')
       return response_message_class(error=exception_to_error_message(ex))
-    except auth.AuthorizationError as ex:
+    except auth.AuthorizationError as ex:  # pragma: no cover
       logging.warning(
           'Authorization error.\n%s\nPeer: %s\nIP: %s', ex.message,
           auth.get_peer_identity().to_bytes(), svc.request_state.remote_address
@@ -510,7 +498,7 @@ def check_scheduling_permissions(bucket_ids):
   bucket_ids = set(bucket_ids)
   can_add = user.filter_buckets_by_perm(user.PERM_BUILDS_ADD, bucket_ids)
   forbidden = sorted(bucket_ids - can_add)
-  if forbidden:
+  if forbidden:  # pragma: no cover
     raise user.current_identity_cannot('add builds to buckets %s', forbidden)
 
 
@@ -552,139 +540,6 @@ class BuildBucketApi(remote.Service):
     settings = config.get_settings_async().get_result()
     build_req = put_request_message_to_build_request(
         request, set(exp.name for exp in settings.experiment.experiments)
-    )
-    build = creation.add_async(build_req).get_result()
-    return build_to_response_message(build, include_lease_key=True)
-
-  ####### PUT_BATCH ############################################################
-
-  class PutBatchRequestMessage(messages.Message):
-    builds = messages.MessageField(PutRequestMessage, 1, repeated=True)
-
-  class PutBatchResponseMessage(messages.Message):
-
-    class OneResult(messages.Message):
-      client_operation_id = messages.StringField(1)
-      build = messages.MessageField(api_common.BuildMessage, 2)
-      error = messages.MessageField(ErrorMessage, 3)
-
-    results = messages.MessageField(OneResult, 1, repeated=True)
-    error = messages.MessageField(ErrorMessage, 2)
-
-  @buildbucket_api_method(
-      PutBatchRequestMessage,
-      PutBatchResponseMessage,
-      path='builds/batch',
-      http_method='PUT'
-  )
-  @auth.public
-  def put_batch(self, request):
-    """Creates builds."""
-
-    # Convert buckets to v2.
-    buckets = sorted({b.bucket for b in request.builds})
-    bucket_ids = dict(zip(buckets, convert_bucket_list(buckets)))
-    for b in request.builds:
-      b.bucket = bucket_ids[b.bucket]
-
-    # Check permissions.
-    check_scheduling_permissions(bucket_ids.itervalues())
-
-    # Prepare response.
-    res = self.PutBatchResponseMessage()
-    res.results = [
-        res.OneResult(client_operation_id=b.client_operation_id)
-        for b in request.builds
-    ]
-
-    settings = config.get_settings_async().get_result()
-    well_known_experiments = set(
-        exp.name for exp in settings.experiment.experiments
-    )
-
-    # Try to convert each PutRequest to BuildRequest.
-    build_reqs = []  # [(index, creation.BuildRequest])
-    for i, b in enumerate(request.builds):
-      try:
-        build_reqs.append((
-            i, put_request_message_to_build_request(b, well_known_experiments)
-        ))
-      except errors.Error as ex:
-        res.results[i].error = exception_to_error_message(ex)
-
-    # Try to create builds.
-    results = creation.add_many_async([br for i, br in build_reqs]).get_result()
-
-    # Convert results to messages.
-    for (i, _), (build, ex) in zip(build_reqs, results):
-      one_res = res.results[i]
-      if build:
-        one_res.build = build_to_message(build, include_lease_key=True)
-      elif isinstance(ex, errors.Error):
-        one_res.error = exception_to_error_message(ex)
-      else:
-        raise ex
-
-    return res
-
-  ####### RETRY ################################################################
-
-  class RetryRequestMessage(messages.Message):
-    client_operation_id = messages.StringField(1)
-    lease_expiration_ts = messages.IntegerField(2)
-    pubsub_callback = messages.MessageField(PubSubCallbackMessage, 3)
-
-  @buildbucket_api_method(
-      id_resource_container(RetryRequestMessage),
-      BuildResponseMessage,
-      path='builds/{id}/retry',
-      http_method='PUT'
-  )
-  @auth.public
-  def retry(self, request):
-    """Retries an existing build."""
-    lease_expiration_date = parse_datetime(request.lease_expiration_ts)
-    errors.validate_lease_expiration_date(lease_expiration_date)
-
-    build_key = ndb.Key(model.Build, request.id)
-    build, in_props = ndb.get_multi([
-        build_key, model.BuildInputProperties.key_for(build_key)
-    ])
-    if not build:
-      raise errors.BuildNotFoundError('Build %s not found' % request.id)
-
-    check_scheduling_permissions([build.bucket_id])
-
-    # Prepare v2 request.
-    sbr = rpc_pb2.ScheduleBuildRequest(
-        builder=build.proto.builder,
-        request_id=request.client_operation_id,
-        canary=common_pb2.YES if build.canary else common_pb2.NO,
-        properties=build.proto.input.properties,
-        gerrit_changes=build.proto.input.gerrit_changes[:],
-    )
-    build.tags_to_protos(sbr.tags)
-    sbr.properties.ParseFromString(in_props.properties)
-    if build.proto.input.HasField('gitiles_commit'):  # pragma: no branch
-      sbr.gitiles_commit.CopyFrom(build.proto.input.gitiles_commit)
-
-    # Read PubSub callback.
-    pubsub_callback_auth_token = None
-    if request.pubsub_callback:  # pragma: no branch
-      pubsub_callback_auth_token = request.pubsub_callback.auth_token
-      pubsub_callback_to_notification_config(
-          request.pubsub_callback, sbr.notify
-      )
-      with _wrap_validation_error():
-        validation.validate_notification_config(sbr.notify)
-
-    # Create the build.
-    build_req = creation.BuildRequest(
-        schedule_build_request=sbr,
-        parameters=build.parameters,
-        lease_expiration_date=lease_expiration_date,
-        retry_of=request.id,
-        pubsub_callback_auth_token=pubsub_callback_auth_token,
     )
     build = creation.add_async(build_req).get_result()
     return build_to_response_message(build, include_lease_key=True)
@@ -816,20 +671,6 @@ class BuildBucketApi(remote.Service):
 
     assert build.lease_key is not None
     return build_to_response_message(build, include_lease_key=True)
-
-  ####### RESET ################################################################
-
-  @buildbucket_api_method(
-      id_resource_container(),
-      BuildResponseMessage,
-      path='builds/{id}/reset',
-      http_method='POST'
-  )
-  @auth.public
-  def reset(self, request):
-    """Forcibly unleases a build and resets its state to SCHEDULED."""
-    build = service.reset(request.id)
-    return build_to_response_message(build)
 
   ####### START ################################################################
 
@@ -1000,141 +841,6 @@ class BuildBucketApi(remote.Service):
         ),
     ).get_result()
     return build_to_response_message(build)
-
-  ####### CANCEL_BATCH #########################################################
-
-  class CancelBatchRequestMessage(messages.Message):
-    build_ids = messages.IntegerField(1, repeated=True)
-    result_details_json = messages.StringField(2)
-
-  class CancelBatchResponseMessage(messages.Message):
-
-    class OneResult(messages.Message):
-      build_id = messages.IntegerField(1, required=True)
-      build = messages.MessageField(api_common.BuildMessage, 2)
-      error = messages.MessageField(ErrorMessage, 3)
-
-    results = messages.MessageField(OneResult, 1, repeated=True)
-    error = messages.MessageField(ErrorMessage, 2)
-
-  @buildbucket_api_method(
-      CancelBatchRequestMessage,
-      CancelBatchResponseMessage,
-      path='builds/cancel',
-      http_method='POST'
-  )
-  @auth.public
-  def cancel_batch(self, request):
-    """Cancels builds."""
-    res = self.CancelBatchResponseMessage()
-    result_details = parse_json_object(
-        request.result_details_json, 'result_details_json'
-    )
-    futs = [(
-        build_id, service.cancel_async(build_id, result_details=result_details)
-    ) for build_id in request.build_ids]
-    for build_id, cancel_fut in futs:
-      one_res = res.OneResult(build_id=build_id)
-      try:
-        one_res.build = build_to_message(cancel_fut.get_result())
-      except errors.Error as ex:
-        one_res.error = exception_to_error_message(ex)
-      res.results.append(one_res)
-    return res
-
-  ####### DELETE_MANY_BUILDS ###################################################
-
-  class DeleteManyBuildsResponse(messages.Message):
-    # set by buildbucket_api_method
-    error = messages.MessageField(ErrorMessage, 1)
-
-  @buildbucket_api_method(
-      endpoints.ResourceContainer(
-          message_types.VoidMessage,
-          bucket=messages.StringField(1, required=True),
-          status=messages.EnumField(model.BuildStatus, 2, required=True),
-          # All specified tags must be present in a build.
-          tag=messages.StringField(3, repeated=True),
-          created_by=messages.StringField(4),
-      ),
-      DeleteManyBuildsResponse,
-      path='bucket/{bucket}/delete',
-      http_method='POST'
-  )
-  @auth.public
-  def delete_many_builds(self, request):
-    """Deletes scheduled or started builds in a bucket."""
-    service.delete_many_builds(
-        convert_bucket(request.bucket),
-        request.status,
-        tags=request.tag[:],
-        created_by=request.created_by
-    )
-    return self.DeleteManyBuildsResponse()
-
-  ####### PAUSE ################################################################
-
-  class PauseResponse(messages.Message):
-    pass
-
-  @buildbucket_api_method(
-      endpoints.ResourceContainer(
-          message_types.VoidMessage,
-          bucket=messages.StringField(1, required=True),
-          is_paused=messages.BooleanField(2, required=True),
-      ),
-      PauseResponse,
-      path='buckets/{bucket}/pause',
-      http_method='POST'
-  )
-  @auth.public
-  def pause(self, request):
-    """Pauses or unpause a bucket."""
-    service.pause(convert_bucket(request.bucket), request.is_paused)
-    return self.PauseResponse()
-
-  ####### GET_BUCKET ###########################################################
-
-  @buildbucket_api_method(
-      endpoints.ResourceContainer(
-          message_types.VoidMessage,
-          bucket=messages.StringField(1, required=True),
-      ),
-      BucketMessage,
-      path='buckets/{bucket}',
-      http_method='GET'
-  )
-  @auth.public
-  def get_bucket(self, request):
-    """Returns bucket information."""
-    bucket_id = convert_bucket(request.bucket)  # checks access
-    project_id, _ = config.parse_bucket_id(bucket_id)
-    rev, bucket_cfg = config.get_bucket(bucket_id)
-    assert bucket_cfg  # access check would have failed.
-    return BucketMessage(
-        name=request.bucket,
-        project_id=project_id,
-        config_file_content=protobuf.text_format.MessageToString(bucket_cfg),
-        config_file_rev=rev,
-        config_file_url=config.get_buildbucket_cfg_url(project_id),
-    )
-
-  ####### BULK PROCESSING ######################################################
-
-  @buildbucket_api_method(
-      endpoints.ResourceContainer(
-          message_types.VoidMessage,
-          tag_key=messages.StringField(1, required=True),
-      ),
-      message_types.VoidMessage,
-  )
-  @auth.require(auth.is_admin)
-  def backfill_tag_index(self, request):
-    """Backfills TagIndex entities from builds."""
-    if ':' in request.tag_key:
-      raise endpoints.BadRequestException('invalid tag_key')
-    backfill_tag_index.launch(request.tag_key)
-    return message_types.VoidMessage()
 
 
 @contextlib.contextmanager

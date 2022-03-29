@@ -4,18 +4,18 @@ go 1.16
 
 require (
 	cloud.google.com/go v0.100.2
+	cloud.google.com/go/appengine v1.2.0
 	cloud.google.com/go/bigquery v1.28.0
 	cloud.google.com/go/cloudtasks v0.1.0
 	cloud.google.com/go/compute v1.3.0
 	cloud.google.com/go/datastore v1.5.0
-	cloud.google.com/go/errorreporting v0.1.0
 	cloud.google.com/go/firestore v1.5.0
 	cloud.google.com/go/iam v0.2.0 // indirect
 	cloud.google.com/go/monitoring v1.4.0 // indirect
 	cloud.google.com/go/profiler v0.2.0 // indirect
 	cloud.google.com/go/pubsub v1.17.0
 	cloud.google.com/go/secretmanager v1.3.0 // indirect
-	cloud.google.com/go/spanner v1.25.0
+	cloud.google.com/go/spanner v1.29.0
 	cloud.google.com/go/storage v1.21.0
 	cloud.google.com/go/trace v1.2.0 // indirect
 	github.com/DATA-DOG/go-sqlmock v1.5.0

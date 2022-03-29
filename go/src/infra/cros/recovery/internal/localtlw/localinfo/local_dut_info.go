@@ -34,12 +34,12 @@ func ReadProvisionInfo(ctx context.Context, dutHostname string) (*tlw.DUTProvisi
 	}
 	crosVersion, ok := s.LocalDUTState.ProvisionableLabels[CrosVersionKey]
 	if !ok {
-		log.Debug(ctx, "local dut info file does not have provisional information of cros-version.")
+		log.Debugf(ctx, "local dut info file does not have provisional information of cros-version.")
 	}
 	pi.CrosVersion = crosVersion
 	jobRepoURL, ok := s.LocalDUTState.ProvisionableAttributes[JobRepoURLKey]
 	if !ok {
-		log.Debug(ctx, "local dut info file does not have provisional information of job_repo_url.")
+		log.Debugf(ctx, "local dut info file does not have provisional information of job_repo_url.")
 	}
 	pi.JobRepoURL = jobRepoURL
 	return pi, nil
@@ -52,6 +52,7 @@ func UpdateProvisionInfo(ctx context.Context, dut *tlw.Dut) error {
 	if err != nil {
 		return errors.Annotate(err, "update provision info").Err()
 	}
+	log.Debugf(ctx, "Update provision info to %s", dut.ProvisionedInfo)
 	s.LocalDUTState.ProvisionableLabels[CrosVersionKey] = dut.ProvisionedInfo.CrosVersion
 	s.LocalDUTState.ProvisionableAttributes[JobRepoURLKey] = dut.ProvisionedInfo.JobRepoURL
 	return errors.Annotate(s.writeStore(), "update provision info").Err()
@@ -68,6 +69,12 @@ func (s *store) writeStore() error {
 	}
 	filePathForDut, err := localDUTInfoFilePath(s.dutHostname)
 	if err != nil {
+		return errors.Annotate(err, "write store").Err()
+	}
+	// Create directories if it is not exist.
+	// The directory need to be created with high permission to allowed to create files inside.
+	newpath := filepath.Dir(filePathForDut)
+	if err := os.MkdirAll(newpath, 0755); err != nil {
 		return errors.Annotate(err, "write store").Err()
 	}
 	// Write DUT state into a local file named by DUT's hostname.

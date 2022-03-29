@@ -27,6 +27,7 @@ func servoRepairPlan() *Plan {
 			"set_state_broken",
 			"has_enough_disk_space",
 			"set_state_not_connected",
+			"Cache latest servod start time",
 			"servo_root_check",
 			"set_state_servod_issue",
 			"servo_host_servod_start",
@@ -65,6 +66,17 @@ func servoRepairPlan() *Plan {
 			"set_state_working",
 		},
 		Actions: map[string]*Action{
+			"Cache latest servod start time": {
+				Docs: []string{
+					"Cache servod start time based on previous runs.",
+					"If we fail all logs will be collected",
+				},
+				Conditions: []string{
+					"is_not_servo_v3",
+				},
+				ExecName:               "cros_register_servod_logs_start",
+				AllowFailAfterRecovery: true,
+			},
 			"servo_host_servod_start": {
 				Conditions: []string{"is_not_container"},
 				RecoveryActions: []string{
@@ -240,6 +252,17 @@ func servoRepairPlan() *Plan {
 			"servod_get_serialname": {
 				Docs:     []string{"run command from xmlrpc"},
 				ExecName: "servod_echo",
+				RecoveryActions: []string{
+					"servo_host_servod_stop",
+					"servo_power_cycle_repair",
+					"servo_power_delivery_repair",
+					"servo_fake_disconnect_dut_repair",
+					"servo_servod_cc_toggle_repair",
+					"servo_reboot_ec_on_dut",
+					"reboot_dut_by_power_state:reset",
+					"reflash_cr_50_fw_on_dut",
+					"reset_ec_on_dut",
+				},
 			},
 			"servo_get_ppdut5_mv": {
 				ExecExtraArgs: []string{"command:ppdut5_mv"},
@@ -848,13 +871,13 @@ func servoRepairPlan() *Plan {
 				Docs: []string{"Try to reflash cr50 firmware and reboot AP from DUT side to wake it up."},
 				Conditions: []string{
 					"is_servo_type_ccd",
-					"is_time_to_reflash_cr50_fw",
+					"cros_is_time_to_reflash_cr50_fw",
 				},
-				Dependencies: []string{"reflash_cr_50_fw"},
+				Dependencies: []string{"cros_reflash_cr50_fw"},
 				RunControl:   1,
 				ExecName:     "servo_host_servod_stop",
 			},
-			"reflash_cr_50_fw": {
+			"cros_reflash_cr50_fw": {
 				Docs: []string{
 					"Try to reflash cr50 firmware and reboot AP from DUT side to wake it up.",
 					"Reboot after the fw flash is successful.",
@@ -865,16 +888,26 @@ func servoRepairPlan() *Plan {
 					"wait_timeout:30",
 				},
 				ExecTimeout: &durationpb.Duration{Seconds: 150},
-				RunControl:  1,
 			},
-			"is_time_to_reflash_cr50_fw": {
+			"cros_is_time_to_reflash_cr50_fw": {
 				Docs: []string{
 					"Verify that it is time when we can try to re-flash fw on cr50 (H1).",
 					"Re-flashing limited to once per once per day to avoid over-flashing the device.",
-					"TODO: (@gregorynisbet): Add and register exec function for this servo condition action.",
-					"b/216567871",
 				},
-				ExecName: "sample_pass",
+				Conditions: []string{
+					"cros_last_time_cr50_reflash_within_24hr",
+				},
+				ExecName: "sample_fail",
+			},
+			"cros_last_time_cr50_reflash_within_24hr": {
+				Docs: []string{
+					"Confirm that no cr50 reflash action has occurred in the past 24 hours.",
+				},
+				ExecExtraArgs: []string{
+					"metrics_kind:cr50_flash",
+					"time_frame_hours:24",
+				},
+				ExecName: "metrics_found_at_last_time",
 			},
 			"reset_ec_on_dut": {
 				Docs:         []string{"Try to reset EC from DUT side to wake CR50 up. And then restart the servod."},
@@ -893,7 +926,7 @@ func servoRepairPlan() *Plan {
 				Docs:       []string{"Try to reset(power-cycle) the servo via smart usbhub."},
 				Conditions: []string{"servo_host_is_labstation"},
 				ExecExtraArgs: []string{
-					"reset_timeout:30",
+					"reset_timeout:60",
 					"wait_timeout:20",
 				},
 				ExecTimeout:            &durationpb.Duration{Seconds: 120},

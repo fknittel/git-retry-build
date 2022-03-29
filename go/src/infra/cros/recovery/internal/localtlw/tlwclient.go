@@ -54,6 +54,8 @@ type UFSClient interface {
 	GetSchedulingUnit(ctx context.Context, req *ufsAPI.GetSchedulingUnitRequest, opts ...grpc.CallOption) (rsp *ufspb.SchedulingUnit, err error)
 	// GetChromeOSDeviceData retrieves requested Chrome OS device data from the UFS and inventoryV2.
 	GetChromeOSDeviceData(ctx context.Context, req *ufsAPI.GetChromeOSDeviceDataRequest, opts ...grpc.CallOption) (rsp *ufspb.ChromeOSDeviceData, err error)
+	// UpdateDeviceRecoveryData updates the labdata, dutdata, resource state, dut states for a DUT
+	UpdateDeviceRecoveryData(ctx context.Context, in *ufsAPI.UpdateDeviceRecoveryDataRequest, opts ...grpc.CallOption) (*ufsAPI.UpdateDeviceRecoveryDataResponse, error)
 	// UpdateDutState updates the state config for a DUT
 	UpdateDutState(ctx context.Context, in *ufsAPI.UpdateDutStateRequest, opts ...grpc.CallOption) (*ufslab.DutState, error)
 }
@@ -123,7 +125,7 @@ func (c *tlwClient) Ping(ctx context.Context, resourceName string, count int) er
 		return errors.Annotate(err, "ping").Err()
 	}
 	if c.isServoHost(resourceName) && isServodContainer(dut) {
-		log.Info(ctx, "Ping: servod container %s starting...", resourceName)
+		log.Infof(ctx, "Ping: servod container %s starting...", resourceName)
 		d, err := c.dockerClient(ctx)
 		if err != nil {
 			return errors.Annotate(err, "ping").Err()
@@ -132,7 +134,7 @@ func (c *tlwClient) Ping(ctx context.Context, resourceName string, count int) er
 		if up, err := d.IsUp(ctx, containerName); err != nil {
 			return errors.Annotate(err, "ping").Err()
 		} else if up {
-			log.Info(ctx, "Ping: servod container %s is up!", containerName)
+			log.Infof(ctx, "Ping: servod container %s is up!", containerName)
 			return nil
 		}
 		return errors.Reason("ping: container %q is down", containerName).Err()
@@ -306,7 +308,7 @@ func (c *tlwClient) startServodContainer(ctx context.Context, dut *tlw.Dut) erro
 	if up, err := d.IsUp(ctx, containerName); err != nil {
 		return errors.Annotate(err, "start servod container").Err()
 	} else if up {
-		log.Debug(ctx, "Servod container %s is already up!", containerName)
+		log.Debugf(ctx, "Servod container %s is already up!", containerName)
 		return nil
 	}
 	// TODO: Receive timeout from request.
@@ -342,7 +344,7 @@ func (c *tlwClient) startServodContainer(ctx context.Context, dut *tlw.Dut) erro
 	if err != nil {
 		return errors.Annotate(err, "start servod container").Err()
 	}
-	log.Debug(ctx, "Container started with id:%s\n with errout: %s", res.Stdout, res.Stderr)
+	log.Debugf(ctx, "Container started with id:%s\n with errout: %s", res.Stdout, res.Stderr)
 	// Wait 3 seconds as sometimes container is not fully initialized and fail
 	// when start ing working with servod or tooling.
 	// TODO(otabek): Move to servod-container wrapper.
@@ -355,16 +357,16 @@ func (c *tlwClient) startServodContainer(ctx context.Context, dut *tlw.Dut) erro
 	if _, err := d.Exec(ctx, containerName, eReq); err != nil {
 		return errors.Annotate(err, "start servod container").Err()
 	}
-	log.Debug(ctx, "Servod container %s started and up!", containerName)
+	log.Debugf(ctx, "Servod container %s started and up!", containerName)
 	return nil
 }
 
 // defaultDockerNetwork provides network in which docker need to run.
 func defaultDockerNetwork() string {
 	network := os.Getenv("DOCKER_DEFAULT_NETWORK")
-	// TODO(b/217258787): Remove check and default value.
+	// If not provided then use host network.
 	if network == "" {
-		network = "default_satlab"
+		network = "host"
 	}
 	return network
 }
@@ -499,8 +501,23 @@ func (c *tlwClient) CallBluetoothPeer(ctx context.Context, req *tlw.CallBluetoot
 	}
 }
 
+// validateCopyRequest validates that all data is provided as part of request.
+func validateCopyRequest(req *tlw.CopyRequest) error {
+	if req.Resource == "" {
+		return errors.Reason("resource is not provided").Err()
+	} else if req.PathSource == "" {
+		return errors.Reason("src path is empty").Err()
+	} else if req.PathDestination == "" {
+		return errors.Reason("destination path is not provided").Err()
+	}
+	return nil
+}
+
 // CopyFileTo copies file to remote device from local.
 func (c *tlwClient) CopyFileTo(ctx context.Context, req *tlw.CopyRequest) error {
+	if err := validateCopyRequest(req); err != nil {
+		return errors.Annotate(err, "copy file to").Err()
+	}
 	if err := tlwio.CopyFileTo(ctx, c.sshPool, req); err != nil {
 		return errors.Annotate(err, "copy file to").Err()
 	}
@@ -509,10 +526,36 @@ func (c *tlwClient) CopyFileTo(ctx context.Context, req *tlw.CopyRequest) error 
 
 // CopyFileFrom copies file from remote device to local.
 func (c *tlwClient) CopyFileFrom(ctx context.Context, req *tlw.CopyRequest) error {
-	if err := tlwio.CopyFileFrom(ctx, c.sshPool, req); err != nil {
+	if err := validateCopyRequest(req); err != nil {
 		return errors.Annotate(err, "copy file from").Err()
 	}
-	return nil
+	dut, err := c.getDevice(ctx, req.Resource)
+	if err != nil {
+		return errors.Annotate(err, "copy file from %q", req.Resource).Err()
+	}
+	// The containerized servo-host does not support SSH so we need use docker client.
+	if c.isServoHost(req.Resource) && isServodContainer(dut) {
+		d, err := c.dockerClient(ctx)
+		if err != nil {
+			return errors.Annotate(err, "copy file from %q", req.Resource).Err()
+		}
+		containerName := servoContainerName(dut)
+		if up, err := d.IsUp(ctx, containerName); err != nil {
+			return errors.Annotate(err, "copy file from %q", req.Resource).Err()
+		} else if !up {
+			log.Infof(ctx, "Copy file from: servod container %s is down!", containerName)
+			return errors.Annotate(err, "copy file from %q", req.Resource).Err()
+		}
+		err = d.CopyFrom(ctx, containerName, req.PathSource, req.PathDestination)
+	} else {
+		// Use dirrect copy if hosts support SSH.
+		err = tlwio.CopyFileFrom(ctx, c.sshPool, &tlw.CopyRequest{
+			Resource:        localproxy.BuildAddr(req.Resource),
+			PathSource:      req.PathSource,
+			PathDestination: req.PathDestination,
+		})
+	}
+	return errors.Annotate(err, "copy file from %q", req.Resource).Err()
 }
 
 // CopyDirectoryTo copies directory to remote device from local, recursively.
@@ -553,7 +596,7 @@ func (c *tlwClient) RunRPMAction(ctx context.Context, req *tlw.RunRPMActionReque
 	default:
 		return errors.Reason("run rpm action: unknown action: %s", req.GetAction().String()).Err()
 	}
-	log.Debug(ctx, "Changing state RPM outlet %s:%s to state %q.", req.GetRpmHostname(), req.GetRpmOutlet(), s)
+	log.Debugf(ctx, "Changing state RPM outlet %s:%s to state %q.", req.GetRpmHostname(), req.GetRpmOutlet(), s)
 	rpmReq := &rpm.RPMPowerRequest{
 		Hostname:          req.GetHostname(),
 		PowerUnitHostname: req.GetRpmHostname(),
@@ -589,14 +632,14 @@ func (c *tlwClient) ListResourcesForUnit(ctx context.Context, name string) ([]st
 	})
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
-			log.Debug(ctx, "List resources %q: record not found.", name)
+			log.Debugf(ctx, "List resources %q: record not found.", name)
 		} else {
 			return nil, errors.Reason("list resources %q", name).Err()
 		}
 	} else if dd.GetLabConfig() == nil {
 		return nil, errors.Reason("list resources %q: device data is empty", name).Err()
 	} else {
-		log.Debug(ctx, "List resources %q: cached received device.", name)
+		log.Debugf(ctx, "List resources %q: cached received device.", name)
 		dut, err := dutinfo.ConvertDut(dd)
 		if err != nil {
 			return nil, errors.Annotate(err, "list resources %q", name).Err()
@@ -605,7 +648,7 @@ func (c *tlwClient) ListResourcesForUnit(ctx context.Context, name string) ([]st
 		return []string{dut.Name}, nil
 	}
 	suName := ufsUtil.AddPrefix(ufsUtil.SchedulingUnitCollection, name)
-	log.Debug(ctx, "list resources %q: trying to find scheduling unit by name %q.", name, suName)
+	log.Debugf(ctx, "list resources %q: trying to find scheduling unit by name %q.", name, suName)
 	su, err := c.ufsClient.GetSchedulingUnit(ctx, &ufsAPI.GetSchedulingUnitRequest{
 		Name: suName,
 	})
@@ -640,7 +683,7 @@ func (c *tlwClient) Version(ctx context.Context, req *tlw.VersionRequest) (*tlw.
 	// Creating cache key for versions based on hostname which is targeted.
 	versionKey := fmt.Sprintf("%s|%s", req.GetType(), req.Resource)
 	if v, ok := c.versionMap[versionKey]; ok {
-		log.Debug(ctx, "Received version %q (cache): %#v", req.GetType(), v)
+		log.Debugf(ctx, "Received version %q (cache): %#v", req.GetType(), v)
 		return v, nil
 	}
 	dut, err := c.getDevice(ctx, req.Resource)
@@ -651,7 +694,7 @@ func (c *tlwClient) Version(ctx context.Context, req *tlw.VersionRequest) (*tlw.
 	switch req.GetType() {
 	case tlw.VersionRequest_CROS:
 		if sv, err := c.getCrosStableVersion(ctx, dut); err != nil {
-			log.Info(ctx, "version: failed to receive stable-version for %q. Error: %s", dut.Name, err)
+			log.Infof(ctx, "version: failed to receive stable-version for %q. Error: %s", dut.Name, err)
 		} else {
 			res = sv
 		}
@@ -663,7 +706,7 @@ func (c *tlwClient) Version(ctx context.Context, req *tlw.VersionRequest) (*tlw.
 			},
 		}
 	}
-	log.Debug(ctx, "Received version %q: %#v", req.GetType(), res)
+	log.Debugf(ctx, "Received version %q: %#v", req.GetType(), res)
 	c.versionMap[versionKey] = res
 	return res, nil
 }
@@ -675,7 +718,7 @@ func (c *tlwClient) getDevice(ctx context.Context, name string) (*tlw.Dut, error
 		name = dutName
 	}
 	if d, ok := c.devices[name]; ok {
-		log.Debug(ctx, "Get device %q: received from cache.", name)
+		log.Debugf(ctx, "Get device %q: received from cache.", name)
 		return d, nil
 	}
 	req := &ufsAPI.GetChromeOSDeviceDataRequest{Hostname: name}
@@ -693,7 +736,7 @@ func (c *tlwClient) getDevice(ctx context.Context, name string) (*tlw.Dut, error
 		return nil, errors.Annotate(err, "get device %q", name).Err()
 	}
 	c.cacheDevice(dut)
-	log.Debug(ctx, "Get device %q: cached received device.", name)
+	log.Debugf(ctx, "Get device %q: cached received device.", name)
 	return dut, nil
 }
 
@@ -798,7 +841,7 @@ func (c *tlwClient) UpdateDut(ctx context.Context, dut *tlw.Dut) error {
 	if err != nil {
 		return errors.Annotate(err, "update DUT %q", dut.Name).Err()
 	}
-	log.Debug(ctx, "Update DUT: update request: %s", req)
+	log.Debugf(ctx, "Update DUT: update request: %s", req)
 	if _, err := c.ufsClient.UpdateDutState(ctx, req); err != nil {
 		return errors.Annotate(err, "update DUT %q", dut.Name).Err()
 	}
@@ -810,7 +853,10 @@ func (c *tlwClient) UpdateDut(ctx context.Context, dut *tlw.Dut) error {
 	} else {
 		return errors.Reason("update DUT %q: dutstate.UFSClient interface is not implemented by client", dut.Name).Err()
 	}
-	return errors.Annotate(localinfo.UpdateProvisionInfo(ctx, dut), "udpate dut").Err()
+	if err := localinfo.UpdateProvisionInfo(ctx, dut); err != nil {
+		return errors.Annotate(err, "update dut").Err()
+	}
+	return nil
 }
 
 // Provision triggers provisioning of the device.
@@ -824,7 +870,7 @@ func (c *tlwClient) Provision(ctx context.Context, req *tlw.ProvisionRequest) er
 	if req.GetSystemImagePath() == "" {
 		return errors.Reason("provision: system image path is not specified").Err()
 	}
-	log.Debug(ctx, "Started provisioning by TLS: %s", req)
+	log.Debugf(ctx, "Started provisioning by TLS: %s", req)
 	addr := fmt.Sprintf("0.0.0.0:%d", tlsPort)
 	conn, err := grpc.Dial(addr, grpc.WithInsecure())
 	if err != nil {

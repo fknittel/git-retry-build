@@ -28,7 +28,7 @@ import (
 var AddAttachedDeviceHostCmd = &subcommands.Command{
 	UsageLine:  "attached-device-host ...",
 	ShortDesc:  "Add an attached device host on a machine",
-	LongDesc:   cmdhelp.AddADHLongDesc,
+	LongDesc:   cmdhelp.AddADHText,
 	CommandRun: addADHCommandRun,
 }
 
@@ -36,7 +36,7 @@ var AddAttachedDeviceHostCmd = &subcommands.Command{
 var AddADHCmd = &subcommands.Command{
 	UsageLine:  "adh ...",
 	ShortDesc:  "Add an attached device host on a machine",
-	LongDesc:   cmdhelp.AddADHLongDesc,
+	LongDesc:   cmdhelp.AddADHText,
 	CommandRun: addADHCommandRun,
 }
 
@@ -213,17 +213,8 @@ func (c *addAttachedDeviceHost) validateArgs() error {
 		if c.machineName == "" {
 			return cmdlib.NewQuietUsageError(c.Flags, "Wrong usage!!\n'-machine' is required, no mode ('-f') is specified.")
 		}
-		if c.manufacturer == "" {
-			return cmdlib.NewQuietUsageError(c.Flags, "Wrong usage!!\n'-man' is required, no mode ('-f') is specified.")
-		}
-		if c.osVersion == "" {
-			return cmdlib.NewQuietUsageError(c.Flags, "Wrong usage!!\n'-os' is required, no mode ('-f') is specified.")
-		}
 		if c.assocHostname == "" {
 			return cmdlib.NewQuietUsageError(c.Flags, "Wrong usage!!\n'-associated-hostname' is required, no mode ('-f') is specified.")
-		}
-		if c.assocHostPort == "" {
-			return cmdlib.NewQuietUsageError(c.Flags, "Wrong usage!!\n'-associated-hostport' is required, no mode ('-f') is specified.")
 		}
 	}
 	return nil

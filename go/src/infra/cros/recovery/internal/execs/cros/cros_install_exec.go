@@ -13,6 +13,7 @@ import (
 	"infra/cros/recovery/internal/components/cros"
 	"infra/cros/recovery/internal/components/servo"
 	"infra/cros/recovery/internal/execs"
+	"infra/cros/recovery/internal/execs/metrics"
 	"infra/cros/recovery/internal/log"
 )
 
@@ -44,7 +45,7 @@ func osInstallRepairExec(ctx context.Context, info *execs.ExecInfo) error {
 	if err != nil {
 		return errors.Annotate(err, "servo os install repair").Err()
 	}
-	log.Debug(ctx, "Servo OS Install Repair: needSink :%t", needSink)
+	log.Debugf(ctx, "Servo OS Install Repair: needSink :%t", needSink)
 	// Turn power off.
 	if err := servod.Set(ctx, "power_state", "off"); err != nil {
 		return errors.Annotate(err, "servo OS install repair").Err()
@@ -65,7 +66,7 @@ func osInstallRepairExec(ctx context.Context, info *execs.ExecInfo) error {
 			return errors.Annotate(err, "servo OS install repair").Err()
 		}
 	} else {
-		log.Info(ctx, "servo os install repair: servo type is neither V4, or V4P1, no need to switch power-deliver to sink.")
+		log.Infof(ctx, "servo os install repair: servo type is neither V4, or V4P1, no need to switch power-deliver to sink.")
 	}
 	// Step 3. Turn power on
 	if err := servod.Set(ctx, "power_state", "on"); err != nil {
@@ -74,7 +75,7 @@ func osInstallRepairExec(ctx context.Context, info *execs.ExecInfo) error {
 	// Next: Clear TPM
 	tpmRecoveryCmd := "chromeos-tpm-recovery"
 	if _, err := run(ctx, info.ActionTimeout, tpmRecoveryCmd); err != nil {
-		log.Debug(ctx, "servo OS install repair: (non-critical) error %q with command %q.", tpmRecoveryCmd)
+		log.Debugf(ctx, "servo OS install repair: (non-critical) error %q with command %q.", tpmRecoveryCmd)
 	}
 	// Now: install image.
 	if _, err := run(ctx, info.ActionTimeout, "chromeos-install", "--yes"); err != nil {
@@ -84,7 +85,7 @@ func osInstallRepairExec(ctx context.Context, info *execs.ExecInfo) error {
 	// are continuing with it here.
 	argsMap := info.GetActionArgs(ctx)
 	haltTimeout := argsMap.AsDuration(ctx, "halt_timeout", 120, time.Second)
-	log.Debug(ctx, "Servo OS Install Repair: using halt timeout : %s", haltTimeout)
+	log.Debugf(ctx, "Servo OS Install Repair: using halt timeout : %s", haltTimeout)
 	// The halt command needs to be run in the background. For this to
 	// succeed, the stdin, stdout and stderr are closed to allow ssh
 	// session to terminate. This closely follows the logic in
@@ -110,8 +111,67 @@ func osInstallRepairExec(ctx context.Context, info *execs.ExecInfo) error {
 	return nil
 }
 
+// verifyBootInRecoveryModeExec verify that device can boot in recovery mode and reboot to normal mode again.
+func verifyBootInRecoveryModeExec(ctx context.Context, info *execs.ExecInfo) error {
+	am := info.GetActionArgs(ctx)
+	dut := info.RunArgs.DUT
+	dutRun := info.NewRunner(dut.Name)
+	dutBackgroundRun := info.NewBackgroundRunner(dut.Name)
+	dutPing := info.NewPinger(dut.Name)
+	servod := info.NewServod()
+	// Flag to notice when device booted and sshable.
+	var successBooted bool
+	callback := func(_ context.Context) error {
+		successBooted = true
+		return nil
+	}
+	req := &cros.BootInRecoveryRequest{
+		DUT:          dut,
+		BootTimeout:  am.AsDuration(ctx, "boot_timeout", 480, time.Second),
+		BootInterval: am.AsDuration(ctx, "boot_interval", 10, time.Second),
+		// Register that device booted and sshable.
+		Callback:            callback,
+		HaltTimeout:         am.AsDuration(ctx, "halt_timeout", 120, time.Second),
+		IgnoreRebootFailure: am.AsBool(ctx, "ignore_reboot_failure", false),
+	}
+	if err := cros.BootInRecoveryMode(ctx, req, dutRun, dutBackgroundRun, dutPing, servod, info.NewLogger()); err != nil {
+		return errors.Annotate(err, "verify boot in recovery mode").Err()
+	}
+	if !successBooted {
+		return errors.Reason("verify boot in recovery mode: did not booted").Err()
+	}
+	return nil
+}
+
+// isTimeToForceDownloadImageToUsbKeyExec verifies if we want to force download image to usbkey.
+//
+// @params: actionArgs should be in the format of:
+// Ex: ["task_name:xxx", "repair_failed_count:1", "repair_failed_interval:10"]
+func isTimeToForceDownloadImageToUsbKeyExec(ctx context.Context, info *execs.ExecInfo) error {
+	argsMap := info.GetActionArgs(ctx)
+	taskName := argsMap.AsString(ctx, "task_name", "")
+	repairFailedCountTarget := argsMap.AsInt(ctx, "repair_failed_count", -1)
+	repairFailedInterval := argsMap.AsInt(ctx, "repair_failed_interval", 10)
+	repairFailedCount, err := metrics.CountFailedRepairFromMetrics(ctx, taskName, info)
+	if err != nil {
+		return errors.Annotate(err, "is time to force download image to usbkey").Err()
+	}
+	// The previous repair task was successful, and the user didn't specify
+	// when repair_failed_count == 0 to flash usbkey image.
+	if repairFailedCount == 0 && repairFailedCountTarget != 0 {
+		return errors.Reason("is time to force download image to usbkey: the number of failed repair is 0, will not force to install os iamge").Err()
+	}
+	if repairFailedCount == repairFailedCountTarget || repairFailedCount%repairFailedInterval == 0 {
+		log.Infof(ctx, "Required re-download image to usbkey as a previous repair failed. Fail count: %d", repairFailedCount)
+		return nil
+	}
+	return errors.Reason("is time to force download image to usbkey: Fail count: %d", repairFailedCount).Err()
+}
+
 func init() {
 	execs.Register("cros_dev_mode_boot_from_servo_usb_drive", devModeBootFromServoUSBDriveExec)
 	execs.Register("cros_run_chromeos_install_command_after_boot_usbdrive", runChromeosInstallCommandWhenBootFromUSBDriveExec)
 	execs.Register("os_install_repair", osInstallRepairExec)
+	execs.Register("cros_verify_boot_in_recovery_mode", verifyBootInRecoveryModeExec)
+	execs.Register("cros_is_time_to_force_download_image_to_usbkey", isTimeToForceDownloadImageToUsbKeyExec)
 }

@@ -9,6 +9,7 @@ import (
 	"go.chromium.org/luci/common/cli"
 
 	"infra/cmd/shivas/internal/ufs/subcmds/asset"
+	"infra/cmd/shivas/internal/ufs/subcmds/attacheddevicehost"
 	"infra/cmd/shivas/internal/ufs/subcmds/attacheddevicemachine"
 	"infra/cmd/shivas/internal/ufs/subcmds/cachingservice"
 	"infra/cmd/shivas/internal/ufs/subcmds/chromeplatform"
@@ -19,6 +20,7 @@ import (
 	"infra/cmd/shivas/internal/ufs/subcmds/machine"
 	"infra/cmd/shivas/internal/ufs/subcmds/machineprototype"
 	"infra/cmd/shivas/internal/ufs/subcmds/nic"
+	"infra/cmd/shivas/internal/ufs/subcmds/peripherals"
 	"infra/cmd/shivas/internal/ufs/subcmds/rack"
 	"infra/cmd/shivas/internal/ufs/subcmds/rackprototype"
 	"infra/cmd/shivas/internal/ufs/subcmds/rpm"
@@ -40,7 +42,10 @@ var DeleteCmd = &subcommands.Command{
 	machine/rack/kvm/rpm/switch/drac/nic
 	host/vm
 	asset/dut/cachingservice/schedulingunit
-	machine-prototype/rack-prototype/chromeplatform/vlan`,
+	machine-prototype/rack-prototype/chromeplatform/vlan
+	attached-device-machine (aliased as adm/attached-device-machine)
+	attached-device-host (aliased as adh/attached-device-host)
+	bluetooth-peers`,
 	CommandRun: func() subcommands.CommandRun {
 		c := &delete{}
 		return c
@@ -61,6 +66,7 @@ func (c *delete) Run(a subcommands.Application, args []string, env subcommands.E
 //
 // Aliases:
 //   attacheddevicemachine.DeleteAttachedDeviceMachineCmd = attacheddevicemachine.DeleteADMCmd
+//   attacheddevicehost.DeleteAttachedDeviceHostCmd = attacheddevicehost.DeleteADHCmd
 func (c deleteApp) GetCommands() []*subcommands.Command {
 	return []*subcommands.Command{
 		subcommands.CmdHelp,
@@ -71,6 +77,8 @@ func (c deleteApp) GetCommands() []*subcommands.Command {
 		attacheddevicemachine.DeleteAttachedDeviceMachineCmd,
 		attacheddevicemachine.DeleteADMCmd,
 		host.DeleteHostCmd,
+		attacheddevicehost.DeleteAttachedDeviceHostCmd,
+		attacheddevicehost.DeleteADHCmd,
 		kvm.DeleteKVMCmd,
 		rpm.DeleteRPMCmd,
 		switches.DeleteSwitchCmd,
@@ -83,6 +91,7 @@ func (c deleteApp) GetCommands() []*subcommands.Command {
 		chromeplatform.DeleteChromePlatformCmd,
 		cachingservice.DeleteCachingServiceCmd,
 		vlan.DeleteVlanCmd,
+		peripherals.DeleteBluetoothPeersCmd,
 	}
 }
 

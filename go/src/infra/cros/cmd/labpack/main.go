@@ -15,7 +15,6 @@ import (
 	b64 "encoding/base64"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -27,6 +26,7 @@ import (
 	"go.chromium.org/luci/common/errors"
 	lucigs "go.chromium.org/luci/common/gcloud/gs"
 	"go.chromium.org/luci/luciexe/build"
+	"google.golang.org/grpc/metadata"
 
 	"infra/cros/cmd/labpack/internal/site"
 	steps "infra/cros/cmd/labpack/internal/steps"
@@ -38,6 +38,7 @@ import (
 	"infra/cros/recovery/logger/metrics"
 	"infra/cros/recovery/tasknames"
 	"infra/cros/recovery/upload"
+	ufsUtil "infra/unifiedfleet/app/util"
 )
 
 // LuciexeProtocolPassthru should always be set to false in checked-in code.
@@ -63,119 +64,92 @@ func main() {
 	if LuciexeProtocolPassthru {
 		log.Printf("Bypassing luciexe.")
 		log.Fatalf("Bypassing luciexe not yet supported.")
+	} else {
+		build.Main(input, &writeOutputProps, &mergeOutputProps,
+			func(ctx context.Context, args []string, state *build.State) error {
+				// TODO(otabek@): Add custom logger.
+				lg := logger.NewLogger()
+
+				// Right after instantiating the logger, but inside build.Main's callback,
+				// make sure that we log what our environment looks like.
+				if DescribeMyDirectoryAndEnvironment {
+					describeEnvironment(os.Stderr)
+					// Describe the contents of the directory once on the way out too.
+					// We will use this information to decide what to persist.
+					defer describeEnvironment(os.Stderr)
+				}
+
+				// Set the log (via the Go standard library's log package) to Stderr, since we know that stderr is collected
+				// for the process as a whole. This will also indirectly influence lg.
+				log.SetOutput(os.Stderr)
+
+				res := &steps.LabpackResponse{Success: true}
+				err := internalRun(ctx, input, state, lg)
+				if err != nil {
+					res.Success = false
+					res.FailReason = err.Error()
+					lg.Debugf("Finished with err: %s", err)
+				}
+				writeOutputProps(res)
+
+				// Construct the client that we will need to push the logs first.
+				// Eventually, we will make this error fatal. However, for right now, we will
+				// just log whether we succeeded or failed to build the client.
+				authenticator := luciauth.NewAuthenticator(ctx, luciauth.SilentLogin, luciauth.Options{})
+				if authenticator != nil {
+					lg.Infof("NewAuthenticator(...): successfully authed!")
+				} else {
+					lg.Errorf("NewAuthenticator(...): did not successfully auth!")
+				}
+				rt, err := authenticator.Transport()
+				if err == nil {
+					lg.Infof("authenticator.Transport(): successfully authed!")
+				} else {
+					lg.Errorf("authenticator.Transport(...): error: %s", err)
+				}
+				client, err := lucigs.NewProdClient(ctx, rt)
+				if err == nil {
+					lg.Infof("Successfully created client")
+				} else {
+					lg.Errorf("Failed to create client: %s", err)
+				}
+
+				// Actually persist the logs
+				swarmingTaskID := state.Infra().GetSwarming().GetTaskId()
+				if swarmingTaskID == "" {
+					// Failed to get the swarming task, since this is the last thing.
+					lg.Errorf("Swarming task is empty!")
+					return err
+				} else {
+					// upload.Upload can potentially run for a long time. Set a timeout of 30s.
+					//
+					// upload.Upload does respond to cancellation (which callFuncWithTimeout uses internally), but
+					// the correct of this code does not and should not depend on this fact.
+					//
+					// callFuncWithTimeout synchronously calls a function with a timeout and then unconditionally hands control
+					// back to its caller. The goroutine that's created in the background will not by itself keep the process alive.
+					status, err := callFuncWithTimeout(ctx, 30*time.Second, func(ctx context.Context) error {
+						return upload.Upload(ctx, client, &upload.Params{
+							// TODO(gregorynisbet): Change this to the log root.
+							SourceDir: ".",
+							// TODO(gregorynisbet): Allow this parameter to be overridden from outside.
+							GSURL:             fmt.Sprintf("gs://chromeos-autotest-results/swarming-%s", swarmingTaskID),
+							MaxConcurrentJobs: 10,
+						})
+					})
+					lg.Infof("Upload log subtask status: %s", status)
+					if err != nil {
+						lg.Errorf("Upload task error: %s", err)
+					}
+				}
+
+				// if err is nil then will marked as SUCCESS
+				return err
+
+			},
+		)
 	}
-	build.Main(
-		input,
-		&writeOutputProps,
-		&mergeOutputProps,
-		makeBuildEntrypoint(&makeBuildEntrypointParams{
-			input:            input,
-			writeOutputProps: writeOutputProps,
-		}),
-	)
 	log.Printf("Exited successfully")
-}
-
-// buildEntrypoint is the type of a build entrypoint.
-type buildEntrypoint func(context.Context, []string, *build.State) error
-
-type makeBuildEntrypointParams struct {
-	input            *steps.LabpackInput
-	writeOutputProps func(*steps.LabpackResponse)
-}
-
-// makeBuildEntrypoint produces an entrypoint to the build, which is handed control only after
-// the luciexe lib has finished its setup.
-func makeBuildEntrypoint(params *makeBuildEntrypointParams) buildEntrypoint {
-	return func(ctx context.Context, args []string, state *build.State) error {
-		// TODO(otabek@): Add custom logger.
-		lg := logger.NewLogger()
-
-		// TODO(gregorynisbet): Remove canary.
-		// Write a labpack canary file with contents that are unique.
-		err := ioutil.WriteFile("./_labpack_canary", []byte("46182c32-2c9d-4abd-a029-54a71c90261e"), 0b110_110_110)
-		if err == nil {
-			lg.Info("Successfully wrote canary file")
-		} else {
-			lg.Error("Failed to write canary file: %s", err)
-		}
-
-		// Right after instantiating the logger, but inside build.Main's callback,
-		// make sure that we log what our environment looks like.
-		if DescribeMyDirectoryAndEnvironment {
-			describeEnvironment(os.Stderr)
-			// Describe the contents of the directory once on the way out too.
-			// We will use this information to decide what to persist.
-			defer describeEnvironment(os.Stderr)
-		}
-
-		// Set the log (via the Go standard library's log package) to Stderr, since we know that stderr is collected
-		// for the process as a whole. This will also indirectly influence lg.
-		log.SetOutput(os.Stderr)
-
-		res := &steps.LabpackResponse{Success: true}
-		err = internalRun(ctx, params.input, state, lg)
-		if err != nil {
-			res.Success = false
-			res.FailReason = err.Error()
-			lg.Debug("Finished with err: %s", err)
-		}
-		params.writeOutputProps(res)
-
-		// Construct the client that we will need to push the logs first.
-		// Eventually, we will make this error fatal. However, for right now, we will
-		// just log whether we succeeded or failed to build the client.
-		authenticator := luciauth.NewAuthenticator(ctx, luciauth.SilentLogin, luciauth.Options{})
-		if authenticator != nil {
-			lg.Info("NewAuthenticator(...): successfully authed!")
-		} else {
-			lg.Error("NewAuthenticator(...): did not successfully auth!")
-		}
-		rt, err := authenticator.Transport()
-		if err == nil {
-			lg.Info("authenticator.Transport(): successfully authed!")
-		} else {
-			lg.Error("authenticator.Transport(...): error: %s", err)
-		}
-		client, err := lucigs.NewProdClient(ctx, rt)
-		if err == nil {
-			lg.Info("Successfully created client")
-		} else {
-			lg.Error("Failed to create client: %s", err)
-		}
-
-		// Actually persist the logs
-		swarmingTaskID := state.Infra().GetSwarming().GetTaskId()
-		if swarmingTaskID == "" {
-			// Failed to get the swarming task, since this is the last thing.
-			lg.Error("Swarming task is empty!")
-			return err
-		} else {
-			// upload.Upload can potentially run for a long time. Set a timeout of 30s.
-			//
-			// upload.Upload does respond to cancellation (which callFuncWithTimeout uses internally), but
-			// the correct of this code does not and should not depend on this fact.
-			//
-			// callFuncWithTimeout synchronously calls a function with a timeout and then unconditionally hands control
-			// back to its caller. The goroutine that's created in the background will not by itself keep the process alive.
-			status, err := callFuncWithTimeout(ctx, 30*time.Second, func(ctx context.Context) error {
-				return upload.Upload(ctx, client, &upload.Params{
-					// TODO(gregorynisbet): Change this to the log root.
-					SourceDir: ".",
-					// TODO(gregorynisbet): Allow this parameter to be overridden from outside.
-					GSURL:             fmt.Sprintf("gs://chromeos-autotest-results/swarming-%s", swarmingTaskID),
-					MaxConcurrentJobs: 10,
-				})
-			})
-			lg.Info("Upload log subtask status: %s", status)
-			if err != nil {
-				lg.Error("Upload task error: %s", err)
-			}
-		}
-
-		// if err is nil then will marked as SUCCESS
-		return err
-	}
 }
 
 // internalRun main entry point to execution received request.
@@ -183,14 +157,15 @@ func internalRun(ctx context.Context, in *steps.LabpackInput, state *build.State
 	// Catching the panic here as luciexe just set a step as fail and but not exit execution.
 	defer func() {
 		if r := recover(); r != nil {
-			lg.Debug("Received panic!")
+			lg.Debugf("Received panic!")
 			err = errors.Reason("panic: %s", r).Err()
 		}
 	}()
 	if err = printInputs(ctx, in); err != nil {
-		lg.Debug("Internal run: failed to marshal proto. Error: %s", err)
+		lg.Debugf("Internal run: failed to marshal proto. Error: %s", err)
 		return err
 	}
+	ctx = setupContextNamespace(ctx, ufsUtil.OSNamespace)
 	access, err := tlw.NewAccess(ctx, in)
 	if err != nil {
 		return errors.Annotate(err, "internal run").Err()
@@ -206,10 +181,10 @@ func internalRun(ctx context.Context, in *steps.LabpackInput, state *build.State
 		var err error
 		metrics, err = karte.NewMetrics(ctx, kclient.ProdConfig(luciauth.Options{}))
 		if err == nil {
-			lg.Info("internal run: metrics client successfully created.")
+			lg.Infof("internal run: metrics client successfully created.")
 		} else {
 			// TODO(gregorynisbet): Make this error end the current function.
-			lg.Error("internal run: failed to instantiate karte client: %s", err)
+			lg.Errorf("internal run: failed to instantiate karte client: %s", err)
 		}
 	}
 	cr, err := getConfiguration(in.GetConfiguration(), lg)
@@ -238,7 +213,7 @@ func internalRun(ctx context.Context, in *steps.LabpackInput, state *build.State
 		BuildbucketID:         state.Infra().GetBackend().GetTask().GetId().GetId(),
 		LogRoot:               logRoot,
 	}
-	lg.Debug("Labpack: started recovery engine.")
+	lg.Debugf("Labpack: started recovery engine.")
 	if err := recovery.Run(ctx, runArgs); err != nil {
 		return errors.Annotate(err, "internal run").Err()
 	}
@@ -249,14 +224,14 @@ func internalRun(ctx context.Context, in *steps.LabpackInput, state *build.State
 // If configuration is empty then we will pass nil so recovery-engine will use default configuration.
 func getConfiguration(config string, lg logger.Logger) (io.Reader, error) {
 	if config == "" {
-		lg.Debug("Labpack: received empty configuration.")
+		lg.Debugf("Labpack: received empty configuration.")
 		return nil, nil
 	}
 	dc, err := b64.StdEncoding.DecodeString(config)
 	if err != nil {
 		return nil, errors.Annotate(err, "get configuration: decode configuration").Err()
 	}
-	lg.Debug("Received configuration:\n%s", string(dc))
+	lg.Debugf("Received configuration:\n%s", string(dc))
 	return bytes.NewReader(dc), nil
 }
 
@@ -286,4 +261,10 @@ func describeEnvironment(stderr io.Writer) error {
 	command.Stdout = stderr
 	err := command.Run()
 	return errors.Annotate(err, "describe environment").Err()
+}
+
+// setupContextNamespace sets namespace to the context for UFS client.
+func setupContextNamespace(ctx context.Context, namespace string) context.Context {
+	md := metadata.Pairs(ufsUtil.Namespace, namespace)
+	return metadata.NewOutgoingContext(ctx, md)
 }

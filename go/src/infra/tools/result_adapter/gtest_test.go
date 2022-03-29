@@ -12,12 +12,11 @@ import (
 	"strings"
 	"testing"
 
+	. "github.com/smartystreets/goconvey/convey"
+	. "go.chromium.org/luci/common/testing/assertions"
 	"go.chromium.org/luci/resultdb/pbutil"
 	pb "go.chromium.org/luci/resultdb/proto/v1"
 	sinkpb "go.chromium.org/luci/resultdb/sink/proto/v1"
-
-	. "github.com/smartystreets/goconvey/convey"
-	. "go.chromium.org/luci/common/testing/assertions"
 )
 
 const snippetInSummaryHtml = `<p><text-artifact artifact-id="snippet" /></p>`
@@ -314,15 +313,20 @@ func TestGTestConversions(t *testing.T) {
 							// "This is a failure message."
 							SummaryBase64: "VGhpcyBpcyBhIGZhaWx1cmUgbWVzc2FnZS4=",
 							Type:          "failure",
+							File:          `../some/path/first_failure.cc`,
+							Line:          123,
 						},
 						{
 							// "This is a second failure message."
 							SummaryBase64: "VGhpcyBpcyBhIHNlY29uZCBmYWlsdXJlIG1lc3NhZ2Uu",
 							Type:          "failure",
+							File:          `../some/path/second_failure.cc`,
+							Line:          456,
 						},
 					},
 				})
-				So(tr.FailureReason.PrimaryErrorMessage, ShouldEqual, `This is a failure message.`)
+				So(tr.FailureReason.PrimaryErrorMessage, ShouldEqual,
+					`first_failure.cc(123): This is a failure message.`)
 			})
 			Convey("first fatal failure takes precedence", func() {
 				tr := convert(&GTestRunResult{
@@ -332,20 +336,27 @@ func TestGTestConversions(t *testing.T) {
 							// "This is a failure message."
 							SummaryBase64: "VGhpcyBpcyBhIGZhaWx1cmUgbWVzc2FnZS4=",
 							Type:          "failure",
+							File:          `../some/path/failure.cc`,
+							Line:          123,
 						},
 						{
 							// "This is a fatal failure message."
 							SummaryBase64: "VGhpcyBpcyBhIGZhdGFsIGZhaWx1cmUgbWVzc2FnZS4=",
 							Type:          "fatal_failure",
+							File:          `../some/path/first_fatal.cc`,
+							Line:          456,
 						},
 						{
 							// "This is a second fatal failure message."
 							SummaryBase64: "VGhpcyBpcyBhIHNlY29uZCBmYXRhbCBmYWlsdXJlIG1lc3NhZ2Uu",
 							Type:          "fatal_failure",
+							File:          `../some/path/second_fatal.cc`,
+							Line:          789,
 						},
 					},
 				})
-				So(tr.FailureReason.PrimaryErrorMessage, ShouldEqual, `This is a fatal failure message.`)
+				So(tr.FailureReason.PrimaryErrorMessage, ShouldEqual,
+					`first_fatal.cc(456): This is a fatal failure message.`)
 			})
 			Convey("failure result parts take precedence over snippet", func() {
 				tr := convert(&GTestRunResult{
@@ -355,12 +366,15 @@ func TestGTestConversions(t *testing.T) {
 							// "This is a failure message."
 							SummaryBase64: "VGhpcyBpcyBhIGZhaWx1cmUgbWVzc2FnZS4=",
 							Type:          "failure",
+							File:          `../some/path/failure_parts.cc`,
+							Line:          456,
 						},
 					},
 					// [FATAL:file_name.cc(123)] Error message.
 					OutputSnippetBase64: "W0ZBVEFMOmZpbGVfbmFtZS5jYygxMjMpXSBFcnJvciBtZXNzYWdlLg==",
 				})
-				So(tr.FailureReason.PrimaryErrorMessage, ShouldEqual, `This is a failure message.`)
+				So(tr.FailureReason.PrimaryErrorMessage, ShouldEqual,
+					`failure_parts.cc(456): This is a failure message.`)
 			})
 			Convey("Google Test trace is removed from failure reason", func() {
 				input := "error message\nGoogle Test trace:\nRandom tracing output\n"
@@ -370,10 +384,29 @@ func TestGTestConversions(t *testing.T) {
 						{
 							SummaryBase64: base64.StdEncoding.EncodeToString([]byte(input)),
 							Type:          "failure",
+							File:          `../some/path/file_name.cc`,
+							Line:          123,
 						},
 					},
 				})
-				So(tr.FailureReason.PrimaryErrorMessage, ShouldEqual, "error message\n")
+				So(tr.FailureReason.PrimaryErrorMessage, ShouldEqual,
+					"file_name.cc(123): error message")
+			})
+			Convey("Leading and trailing spaces are removed from failure reason", func() {
+				input := "  error\n message\n  "
+				tr := convert(&GTestRunResult{
+					Status: "FAILURE",
+					ResultParts: []*GTestRunResultPart{
+						{
+							SummaryBase64: base64.StdEncoding.EncodeToString([]byte(input)),
+							Type:          "failure",
+							File:          `../some/path/file_name.cc`,
+							Line:          123,
+						},
+					},
+				})
+				So(tr.FailureReason.PrimaryErrorMessage, ShouldEqual,
+					"file_name.cc(123): error\n message")
 			})
 			Convey("empty", func() {
 				tr := convert(&GTestRunResult{
@@ -385,17 +418,26 @@ func TestGTestConversions(t *testing.T) {
 			Convey("primary error message truncated at 1024 bytes", func() {
 				var input bytes.Buffer
 				var expected bytes.Buffer
-				// Print 1020 bytes as 340 3-byte runes.
-				for i := 0; i < 340; i++ {
+
+				// 18 bytes of header.
+				expected.WriteString("filename.cc(123): ")
+
+				// Print 1002 bytes as 334 3-byte runes.
+				for i := 0; i < 334; i++ {
 					// Use swedish "Place of interest symbol", which encodes as three-bytes, e2 8c 98.
 					// See https://blog.golang.org/strings.
 					input.WriteRune('\u2318')
 					expected.WriteRune('\u2318')
 				}
-				// Numbers and dots are one byte in UTF-8. Construct input to be 1025 bytes,
-				// expected to be the 1024-byte truncation.
+				// Numbers and dots are one byte in UTF-8.
+				// Construct input to be (1025 - 18) bytes (18 being the
+				// length of the file name and line), which should result
+				// in a 1024-byte truncated result.
 				input.WriteString("12345")
 				expected.WriteString("1...")
+
+				So(input.Len(), ShouldEqual, 1025-18)
+				So(expected.Len(), ShouldEqual, 1024)
 
 				tr := convert(&GTestRunResult{
 					Status: "FAILURE",
@@ -403,6 +445,8 @@ func TestGTestConversions(t *testing.T) {
 						{
 							SummaryBase64: base64.StdEncoding.EncodeToString(input.Bytes()),
 							Type:          "failure",
+							File:          `path/file/filename.cc`,
+							Line:          123,
 						},
 					},
 				})
@@ -416,6 +460,8 @@ func TestGTestConversions(t *testing.T) {
 							// "This is a failure message."
 							SummaryBase64: "VGhpcyBpcyBhIGZhaWx1cmUgbWVzc2FnZS4=",
 							Type:          "undefined",
+							File:          `path/file_name.cc`,
+							Line:          123,
 						},
 					},
 				})
@@ -430,6 +476,8 @@ func TestGTestConversions(t *testing.T) {
 							// See https://www.cl.cam.ac.uk/~mgk25/ucs/examples/UTF-8-test.txt.
 							SummaryBase64: "/w8=",
 							Type:          "fatal_failure",
+							File:          `path/file_name.cc`,
+							Line:          123,
 						},
 					},
 				})
@@ -442,6 +490,8 @@ func TestGTestConversions(t *testing.T) {
 						{
 							SummaryBase64: "Invalid base 64.",
 							Type:          "fatal_failure",
+							File:          `path/file_name.cc`,
+							Line:          123,
 						},
 					},
 				})
@@ -454,7 +504,8 @@ func TestGTestConversions(t *testing.T) {
 					OutputSnippetBase64: "W0ZBVEFMOmZpbGVfbmFtZS5jYygxMjMpXSBFcnJvciBtZXNzYWdlLg==",
 				})
 				So(tr.FailureReason, ShouldNotEqual, nil)
-				So(tr.FailureReason.PrimaryErrorMessage, ShouldEqual, `file_name.cc(123): Error message.`)
+				So(tr.FailureReason.PrimaryErrorMessage, ShouldEqual,
+					`file_name.cc(123): Error message.`)
 			})
 		})
 	})
@@ -502,6 +553,46 @@ func TestGTestConversions(t *testing.T) {
 		Convey("windows line endings", func() {
 			example := "blah\r\n../../base/allocator/partition_allocator/partition_root.h(998) Check failed: !slot_span->bucket->is_direct_mapped()\r\nblah"
 			test(example, "partition_root.h(998): Check failed: !slot_span->bucket->is_direct_mapped()")
+		})
+		Convey("GTest Expectation", func() {
+			// Test a log with multiple expectation failures, to make
+			// sure only one gets picekd up.
+			example := `Unrelated log line
+../../content/public/test/browser_test_base.cc:718: Failure
+Expected equality of these values:
+  expected_exit_code_
+    Which is: 0
+  ContentMain(std::move(params))
+    Which is: 1
+Stack trace:
+#0 0x5640a41b448b content::BrowserTestBase::SetUp()
+../../content/public/test/browser_test_base.cc:719: Failure
+Expected something else
+Stack trace:
+#0 0x5640a41b448b content::BrowserTestBase::SetUp()`
+			expected := `browser_test_base.cc(718): Expected equality of these values:
+  expected_exit_code_
+    Which is: 0
+  ContentMain(std::move(params))
+    Which is: 1`
+			test(example, expected)
+		})
+		Convey("GTest Expectation (Windows)", func() {
+			example := `Unrelated log line
+../../chrome/browser/net/network_context_configuration_browsertest.cc(984): error: Expected equality of these values:
+  net::ERR_CONNECTION_REFUSED
+    Which is: -102
+  simple_loader2->NetError()
+    Which is: -21
+Stack trace:
+Backtrace:
+	std::__1::unique_ptr<network::ResourceRequest,std::__1::default_delete<network::ResourceRequest> >::reset [0x007A3C5B+7709]`
+			expected := `network_context_configuration_browsertest.cc(984): Expected equality of these values:
+  net::ERR_CONNECTION_REFUSED
+    Which is: -102
+  simple_loader2->NetError()
+    Which is: -21`
+			test(example, expected)
 		})
 		Convey("empty snippet", func() {
 			example := ""

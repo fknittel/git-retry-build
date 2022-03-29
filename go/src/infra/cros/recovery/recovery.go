@@ -41,58 +41,45 @@ func Run(ctx context.Context, args *RunArgs) (rErr error) {
 	if args.Logger == nil {
 		args.Logger = logger.NewLogger()
 	}
+
 	ctx = log.WithLogger(ctx, args.Logger)
 	if !args.EnableRecovery {
-		log.Info(ctx, "Recovery actions is blocker by run arguments.")
+		log.Infof(ctx, "Recovery actions is blocker by run arguments.")
 	}
-	log.Info(ctx, "Run recovery for %q", args.UnitName)
+	log.Infof(ctx, "Run recovery for %q", args.UnitName)
 	resources, err := retrieveResources(ctx, args)
 	if err != nil {
 		return errors.Annotate(err, "run recovery %q", args.UnitName).Err()
 	}
-	if args.ShowSteps {
-		var step *build.Step
-		step, ctx = build.StartStep(ctx, fmt.Sprintf("Start %s", args.TaskName))
-		defer func() { step.End(err) }()
-	}
 	if args.Metrics == nil {
-		log.Debug(ctx, "run: metrics is nil")
-	} else {
-		log.Debug(ctx, "run: metrics is non-nil")
+		log.Debugf(ctx, "run: metrics is nil")
+	} else { // Guard against incorrectly setting up Karte client. See b:217746479 for details.
+		log.Debugf(ctx, "run: metrics is non-nil")
 		start := time.Now()
 		// TODO(gregorynisbet): Create a helper function to make this more compact.
 		defer (func() {
-			stop := time.Now()
-			status := metrics.ActionStatusUnspecified
-			failReason := ""
-			if rErr == nil {
-				status = metrics.ActionStatusFail
-			} else {
-				status = metrics.ActionStatusSuccess
-				failReason = rErr.Error()
-			}
 			// Keep this call up to date with NewMetric in execs.go.
-			if args.Metrics != nil { // Guard against incorrectly setting up Karte client. See b:217746479 for details.
-				_, mErr := args.Metrics.Create(
-					ctx,
-					&metrics.Action{
-						ActionKind:     "run_recovery",
-						StartTime:      start,
-						StopTime:       stop,
-						SwarmingTaskID: args.SwarmingTaskID,
-						BuildbucketID:  args.BuildbucketID,
-						Hostname:       args.UnitName,
-						// TODO(gregorynisbet): add status and FailReason.
-						Status:     status,
-						FailReason: failReason,
-					},
-				)
-				if mErr != nil {
-					args.Logger.Error("Metrics error during teardown: %s", err)
-				}
+			action := &metrics.Action{
+				ActionKind:     metrics.RunLibraryKind,
+				StartTime:      start,
+				StopTime:       time.Now(),
+				SwarmingTaskID: args.SwarmingTaskID,
+				BuildbucketID:  args.BuildbucketID,
+				Hostname:       args.UnitName,
+			}
+			if rErr == nil {
+				action.Status = metrics.ActionStatusSuccess
+			} else {
+				action.Status = metrics.ActionStatusFail
+				action.FailReason = rErr.Error()
+			}
+
+			if mErr := args.Metrics.Create(ctx, action); mErr != nil {
+				args.Logger.Errorf("Metrics error during teardown: %s", err)
 			}
 		})()
 	}
+
 	// Close all created local proxies.
 	defer func() {
 		localproxy.ClosePool()
@@ -102,10 +89,16 @@ func Run(ctx context.Context, args *RunArgs) (rErr error) {
 	var errs []error
 	for ir, resource := range resources {
 		if ir != 0 {
-			log.Debug(ctx, "Continue to the next resource.")
+			log.Debugf(ctx, "Continue to the next resource.")
 		}
-		if err := runResource(ctx, resource, args); err != nil {
+		startTime := time.Now()
+		err := runResource(ctx, resource, args)
+		if err != nil {
 			errs = append(errs, errors.Annotate(err, "run recovery %q", resource).Err())
+		}
+		// Create karte metric
+		if createMetricErr := createTaskRunMetricsForResource(ctx, args, startTime, resource, err); createMetricErr != nil {
+			args.Logger.Errorf("Create metric for resource: %q with error: %s", resource, createMetricErr)
 		}
 	}
 	if len(errs) > 0 {
@@ -114,12 +107,36 @@ func Run(ctx context.Context, args *RunArgs) (rErr error) {
 	return nil
 }
 
+// createTaskRunMetricsForResource creates metric action for resource with reporting what is the tasking is running for it.
+func createTaskRunMetricsForResource(ctx context.Context, args *RunArgs, startTime time.Time, resource string, runResourceErr error) error {
+	if args.Metrics == nil {
+		log.Debugf(ctx, "Create karte action for each resource: For resource %s: metrics is not provided.", resource)
+		return nil
+	}
+	action := &metrics.Action{
+		ActionKind:     fmt.Sprintf(metrics.PerResourceTaskKindGlob, args.TaskName),
+		StartTime:      startTime,
+		StopTime:       time.Now(),
+		SwarmingTaskID: args.SwarmingTaskID,
+		BuildbucketID:  args.BuildbucketID,
+		Hostname:       resource,
+		Status:         metrics.ActionStatusSuccess,
+		FailReason:     "",
+	}
+	if runResourceErr != nil {
+		action.Status = metrics.ActionStatusFail
+		action.FailReason = runResourceErr.Error()
+	}
+	mErr := args.Metrics.Create(ctx, action)
+	return errors.Annotate(mErr, "create task run metrics for resource %s", resource).Err()
+}
+
 // runResource run single resource.
 func runResource(ctx context.Context, resource string, args *RunArgs) (rErr error) {
-	log.Info(ctx, "Resource %q: started", resource)
+	log.Infof(ctx, "Resource %q: started", resource)
 	if args.ShowSteps {
 		var step *build.Step
-		step, ctx = build.StartStep(ctx, fmt.Sprintf("Resource %q", resource))
+		step, ctx = build.StartStep(ctx, fmt.Sprintf("Start %q for %q", args.TaskName, resource))
 		defer func() { step.End(rErr) }()
 	}
 	dut, err := readInventory(ctx, resource, args)
@@ -131,11 +148,16 @@ func runResource(ctx context.Context, resource string, args *RunArgs) (rErr erro
 	if err != nil {
 		return errors.Annotate(err, "run resource %q", args.UnitName).Err()
 	}
+	// In any case update inventory to update data back, even execution failed.
+	var errs []error
 	if err := runDUTPlans(ctx, dut, config, args); err != nil {
-		return errors.Annotate(err, "run resource %q", resource).Err()
+		errs = append(errs, err)
 	}
 	if err := updateInventory(ctx, dut, args); err != nil {
-		return errors.Annotate(err, "run resource %q", resource).Err()
+		errs = append(errs, err)
+	}
+	if len(errs) > 0 {
+		return errors.Annotate(errors.MultiError(errs), "run recovery").Err()
 	}
 	return nil
 }
@@ -252,7 +274,7 @@ func readInventory(ctx context.Context, resource string, args *RunArgs) (dut *tl
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			log.Debug(ctx, "Read resource received panic!")
+			log.Debugf(ctx, "Read resource received panic!")
 			err = errors.Reason("read resource panic: %v", r).Err()
 		}
 	}()
@@ -278,13 +300,14 @@ func updateInventory(ctx context.Context, dut *tlw.Dut, args *RunArgs) (rErr err
 	}
 	logDUTInfo(ctx, dut.Name, dut, "updated DUT info")
 	if args.EnableUpdateInventory {
-		log.Info(ctx, "Update inventory %q: starting...", dut.Name)
+		log.Infof(ctx, "Update inventory %q: starting...", dut.Name)
 		// Update DUT info in inventory in any case. When fail and when it passed
 		if err := args.Access.UpdateDut(ctx, dut); err != nil {
 			return errors.Annotate(err, "update inventory").Err()
 		}
+		log.Infof(ctx, "Update inventory %q: successful.", dut.Name)
 	} else {
-		log.Info(ctx, "Update inventory %q: disabled.", dut.Name)
+		log.Infof(ctx, "Update inventory %q: disabled.", dut.Name)
 	}
 	return nil
 }
@@ -292,9 +315,9 @@ func updateInventory(ctx context.Context, dut *tlw.Dut, args *RunArgs) (rErr err
 func logDUTInfo(ctx context.Context, resource string, dut *tlw.Dut, msg string) {
 	s, err := json.MarshalIndent(dut, "", "\t")
 	if err != nil {
-		log.Debug(ctx, "Resource %q: %s. Fail to print DUT info. Error: %s", resource, msg, err)
+		log.Debugf(ctx, "Resource %q: %s. Fail to print DUT info. Error: %s", resource, msg, err)
 	} else {
-		log.Debug(ctx, "Resource %q: %s \n%s", resource, msg, s)
+		log.Infof(ctx, "Resource %q: %s \n%s", resource, msg, s)
 	}
 }
 
@@ -304,15 +327,10 @@ func runDUTPlans(ctx context.Context, dut *tlw.Dut, c *config.Configuration, arg
 		args.Logger.IndentLogging()
 		defer args.Logger.DedentLogging()
 	}
-	log.Info(ctx, "Run DUT %q: starting...", dut.Name)
+	log.Infof(ctx, "Run DUT %q: starting...", dut.Name)
 	planNames := c.GetPlanNames()
-	log.Debug(ctx, "Run DUT %q plans: will use %s.", dut.Name, planNames)
-	hasClosingPlan := false
+	log.Debugf(ctx, "Run DUT %q plans: will use %s.", dut.Name, planNames)
 	for _, planName := range planNames {
-		if planName == config.PlanClosing {
-			// The Closing plan will be added by default and it i sok if it missed.
-			hasClosingPlan = true
-		}
 		if _, ok := c.GetPlans()[planName]; !ok {
 			return errors.Reason("run dut %q plans: plan %q not found in configuration", dut.Name, planName).Err()
 		}
@@ -349,23 +367,25 @@ func runDUTPlans(ctx context.Context, dut *tlw.Dut, c *config.Configuration, arg
 		}
 	}
 	defer func() {
-		// If closing plan provided by configuration then we do not need run it here.
-		if !hasClosingPlan {
-			plan, ok := c.GetPlans()[config.PlanClosing]
-			if !ok {
-				log.Info(ctx, "Run plans: plan %q not found in configuration.", config.PlanClosing)
+		// Always try to run closing plan as the end of the configuration.
+		plan, ok := c.GetPlans()[config.PlanClosing]
+		if !ok {
+			log.Infof(ctx, "Run plans: plan %q not found in configuration.", config.PlanClosing)
+		} else {
+			// Closing plan always allowed to fail.
+			plan.AllowFail = true
+			if err := runSinglePlan(ctx, config.PlanClosing, plan, execArgs); err != nil {
+				log.Debugf(ctx, "Run plans: plan %q for %q finished with error: %s", config.PlanClosing, dut.Name, err)
 			} else {
-				// Closing plan always allowed to fail.
-				plan.AllowFail = true
-				if err := runSinglePlan(ctx, config.PlanClosing, plan, execArgs); err != nil {
-					log.Debug(ctx, "Run plans: plan %q for %q finished with error: %s", config.PlanClosing, dut.Name, err)
-				} else {
-					log.Debug(ctx, "Run plans: plan %q for %q finished successfully", config.PlanClosing, dut.Name)
-				}
+				log.Debugf(ctx, "Run plans: plan %q for %q finished successfully", config.PlanClosing, dut.Name)
 			}
 		}
 	}()
 	for _, planName := range planNames {
+		if planName == config.PlanClosing {
+			// The closing plan is always run as last one.
+			continue
+		}
 		plan, ok := c.GetPlans()[planName]
 		if !ok {
 			return errors.Reason("run plans: plan %q: not found in configuration", planName).Err()
@@ -374,23 +394,23 @@ func runDUTPlans(ctx context.Context, dut *tlw.Dut, c *config.Configuration, arg
 			return errors.Annotate(err, "run plans").Err()
 		}
 	}
-	log.Info(ctx, "Run DUT %q plans: finished successfully.", dut.Name)
+	log.Infof(ctx, "Run DUT %q plans: finished successfully.", dut.Name)
 	return nil
 }
 
 // runSinglePlan run single plan for all resources associated with plan.
 func runSinglePlan(ctx context.Context, planName string, plan *config.Plan, execArgs *execs.RunArgs) error {
-	log.Info(ctx, "Run plan %q: starting...", planName)
+	log.Infof(ctx, "Run plan %q: starting...", planName)
 	resources := collectResourcesForPlan(planName, execArgs.DUT)
 	if len(resources) == 0 {
-		log.Info(ctx, "Run plan %q: no resources found.", planName)
+		log.Infof(ctx, "Run plan %q: no resources found.", planName)
 		return nil
 	}
 	for _, resource := range resources {
 		if err := runDUTPlanPerResource(ctx, resource, planName, plan, execArgs); err != nil {
-			log.Info(ctx, "Run %q plan for %s: finished with error: %s.", planName, resource, err)
+			log.Infof(ctx, "Run %q plan for %s: finished with error: %s.", planName, resource, err)
 			if plan.GetAllowFail() {
-				log.Debug(ctx, "Run plan %q for %q: ignore error as allowed to fail.", planName, resource)
+				log.Debugf(ctx, "Run plan %q for %q: ignore error as allowed to fail.", planName, resource)
 			} else {
 				return errors.Annotate(err, "run plan %q", planName).Err()
 			}
@@ -401,7 +421,7 @@ func runSinglePlan(ctx context.Context, planName string, plan *config.Plan, exec
 
 // runDUTPlanPerResource runs a plan against the single resource of the DUT.
 func runDUTPlanPerResource(ctx context.Context, resource, planName string, plan *config.Plan, execArgs *execs.RunArgs) (rErr error) {
-	log.Info(ctx, "Run plan %q for %q: started", planName, resource)
+	log.Infof(ctx, "Run plan %q for %q: started", planName, resource)
 	if execArgs.ShowSteps {
 		var step *build.Step
 		step, ctx = build.StartStep(ctx, fmt.Sprintf("Run plan %q for %q", planName, resource))
@@ -415,7 +435,7 @@ func runDUTPlanPerResource(ctx context.Context, resource, planName string, plan 
 	if err := engine.Run(ctx, planName, plan, execArgs); err != nil {
 		return errors.Annotate(err, "run plan %q for %q", planName, execArgs.ResourceName).Err()
 	}
-	log.Info(ctx, "Run plan %q for %s: finished successfully.", planName, execArgs.ResourceName)
+	log.Infof(ctx, "Run plan %q for %s: finished successfully.", planName, execArgs.ResourceName)
 	return nil
 }
 

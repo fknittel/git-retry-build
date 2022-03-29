@@ -25,6 +25,7 @@ import (
 	ufsdevice "infra/unifiedfleet/api/v1/models/chromeos/device"
 	chromeosLab "infra/unifiedfleet/api/v1/models/chromeos/lab"
 	ufsmanufacturing "infra/unifiedfleet/api/v1/models/chromeos/manufacturing"
+	ufsAPI "infra/unifiedfleet/api/v1/rpc"
 	"infra/unifiedfleet/app/config"
 	"infra/unifiedfleet/app/external"
 	"infra/unifiedfleet/app/model/configuration"
@@ -1056,4 +1057,40 @@ func GetDUTConnectedToServo(ctx context.Context, servo *chromeosLab.Servo) (*ufs
 		return nil, status.Errorf(codes.Internal, "Misconfigured DUTs. Muiltple DUTS(%d) found with same servo config", len(dut))
 	}
 	return nil, nil
+}
+
+// UpdateRecoveryData updates data from recovery
+//
+// It updates machine/asset, Peripherals(servo, wifirouter,...) and Dut's resourceState
+func UpdateRecoveryData(ctx context.Context, req *ufsAPI.UpdateDeviceRecoveryDataRequest) error {
+	if err := checkDutIdAndHostnameAreAssociated(ctx, req.GetChromeosDeviceId(), req.GetHostname()); err != nil {
+		logging.Errorf(ctx, "updateRecoveryData chrome device id and hostname are not associated", err.Error())
+	}
+	if err := updateRecoveryDutData(ctx, req.GetChromeosDeviceId(), req.GetDutData()); err != nil {
+		logging.Errorf(ctx, "updateRecoveryData unable to update dut data", err.Error())
+		return err
+	}
+	if err := updateRecoveryLabData(ctx, req.GetHostname(), req.GetResourceState(), req.GetLabData()); err != nil {
+		logging.Errorf(ctx, "updateRecoveryData unable to update lab data", err.Error())
+		return err
+	}
+	if _, err := UpdateDutState(ctx, req.GetDutState()); err != nil {
+		logging.Errorf(ctx, "updateRecoveryData unable to update dut state", err.Error())
+		return err
+	}
+	return nil
+}
+
+func checkDutIdAndHostnameAreAssociated(ctx context.Context, dutId string, hostname string) error {
+	lses, err := inventory.QueryMachineLSEByPropertyName(ctx, "machine_ids", dutId, true)
+	if err != nil {
+		return errors.Annotate(err, "failed to query host for machine id %s", dutId).Err()
+	}
+	if len(lses) != 1 {
+		return status.Errorf(codes.FailedPrecondition, "there should be exactly 1 machinelse associated id. (%d,%s).", len(lses), dutId)
+	}
+	if lses[0].GetName() != hostname {
+		return status.Errorf(codes.FailedPrecondition, "chromeos device id(%s) associated hostname(%s) does not match(%s).", dutId, lses[0].GetName(), hostname)
+	}
+	return nil
 }

@@ -4106,6 +4106,20 @@ wheel: <
 
 * *universal*
 
+## **mozdebug-py3**
+
+### 0.3.0
+
+```protobuf
+wheel: <
+  name: "infra/python/wheels/mozdebug-py3"
+  version: "version:0.3.0"
+>
+```
+
+
+* *universal*
+
 ## **mozfile**
 
 ### 2.0.0
@@ -4242,6 +4256,20 @@ wheel: <
 wheel: <
   name: "infra/python/wheels/mozprocess-py2"
   version: "version:0.26"
+>
+```
+
+
+* *universal*
+
+## **mozprocess-py3**
+
+### 1.3.0
+
+```protobuf
+wheel: <
+  name: "infra/python/wheels/mozprocess-py3"
+  version: "version:1.3.0"
 >
 ```
 
@@ -4967,6 +4995,20 @@ wheel: <
 wheel: <
   name: "infra/python/wheels/perfect-hash-py2_py3"
   version: "version:0.2.1"
+>
+```
+
+
+* *universal*
+
+## **pexpect**
+
+### 4.8.0
+
+```protobuf
+wheel: <
+  name: "infra/python/wheels/pexpect-py2_py3"
+  version: "version:4.8.0"
 >
 ```
 

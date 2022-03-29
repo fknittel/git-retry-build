@@ -363,12 +363,25 @@ func TestSetActionEntityFields(t *testing.T) {
 			dst:      &ActionEntity{CreateTime: time.Unix(3, 4)},
 			expected: &ActionEntity{CreateTime: time.Unix(3, 4)},
 		},
+		{
+			name:   "fail reason",
+			fields: nil,
+			src: &ActionEntity{
+				FailReason: "a",
+			},
+			dst: &ActionEntity{
+				FailReason: "b",
+			},
+			expected: &ActionEntity{
+				FailReason: "a",
+			},
+		},
 	}
 
 	for _, tt := range cases {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			tt := tt
 			setActionEntityFields(tt.fields, tt.src, tt.dst)
 			expected := tt.expected
 			actual := tt.dst

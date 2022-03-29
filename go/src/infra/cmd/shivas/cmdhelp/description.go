@@ -206,6 +206,8 @@ Example DUT with peripherals:
 The protobuf definition of machineLSE is part of
 https://chromium.googlesource.com/infra/infra/+/refs/heads/main/go/src/infra/unifiedfleet/api/v1/models/machine_lse.proto
 
+It is possible to update the underlying asset using -zone, -rack, -model or -board options.
+
 [MCSV Mode]
 The file may have multiple or one dut csv record.
 The header format and sequence should be: [name,asset,model,board,servo_host,servo_port,servo_serial,rpm_host,rpm_outlet,pools]
@@ -213,7 +215,11 @@ Example mcsv format:
 name,asset,model,board,servo_host,servo_port,servo_serial,servo_setup,rpm_host,rpm_outlet,pools
 dut-1,asset-1,eve,eve,servo-1,9998,ServoXdw,REGULAR,rpm-1,23,"CTS QUOTA"
 dut-2,asset-2,kevin,kevin,servo-2,9998,ServoYdw,,rpm-2,43,QUOTA
-dut-3,asset-3,,,chromeos6-row2-rack3-host4-servo,,,,,,,`
+dut-3,asset-3,,,chromeos6-row2-rack3-host4-servo,,,,,,,
+
+It is possible to update -zone or -rack of asset. This will be applied to all the rows of the csv.
+
+`
 
 	// DUTUpdateFileText description for json file input
 	DUTUpdateFileText string = `Path to a file(.json) containing DUT specification.
@@ -377,6 +383,8 @@ Example Labstation:
         "description": "CrOS6-ro10-r22 labstation",
 }
 
+It is possible to update the underlying asset using -zone, -board, -rack or -model with the json update.
+
 The protobuf definition of machine lse is part of
 https://chromium.googlesource.com/infra/infra/+/refs/heads/main/go/src/infra/unifiedfleet/api/v1/models/machine_lse.proto
 
@@ -391,6 +399,8 @@ name,asset,model,board,rpm_host,rpm_outlet,pools
 labstation-1,asset-1,wukong,fizz_labstation,rpm-1,A2,labstation_main
 labstation-2,asset-2,wukong,fizz_labstation,rpm-2,A2,"labstation_main labstation_tryjob"
 labstation-3,asset-3,wukong,fizz_labstation,rpm-3,A2,labstation_main
+
+It is possible to update -zone or -rack along with csv. The update is applied to all the rows.
 
 `
 	// LabstationUpdateFileText description for json file input
@@ -1867,27 +1877,13 @@ https://chromium.googlesource.com/infra/infra/+/refs/heads/main/go/src/infra/uni
 
 	TriggerCronDescription string = `Triggers a cron job on UFS. Available jobs: ` + CronTriggerAvailableJobsString()
 
-	// GetAttachedDeviceMachineText description for GetAttachedDeviceMachineCmd
-	GetAttachedDeviceMachineText string = `Get attached device machine details by filters.
-
-This cmd requires the user to set the NAMESPACE in env. Otherwise, it will
-default to operate in the browser lab namespace.
-
-Example:
-
-shivas get attached-device-machine {name1} {name2}
-shivas get attached-device-machine -devicetype apple_phone -model model1
-shivas get attached-device-machine -state serving -state needs_repair -zone atl97
-
-Also aliased as 'shivas get adm'.
-
-Gets the attached device machine and prints the output in user format.`
-
-	// GetADMText description for GetADMCmd
+	// GetADMText description for GetAttachedDeviceMachineCmd and GetADMCmd
 	GetADMText string = `Get attached device machine details by filters.
 
 This cmd requires the user to set the NAMESPACE in env. Otherwise, it will
 default to operate in the browser lab namespace.
+
+'shivas get adm ...' is an alias of 'shivas get attached-device-machine...'
 
 Example:
 
@@ -1899,24 +1895,13 @@ Also aliased as 'shivas get attached-device-machine'.
 
 Gets the attached device machine and prints the output in user format.`
 
-	// AddAttachedDeviceMachineText long description for AddAttachedDeviceMachineCmd
-	AddAttachedDeviceMachineText string = `Create an attached device (Hardware asset: Android phone, iOS tablet, etc.) to UFS.
-
-This cmd requires the user to set the NAMESPACE in env. Otherwise, it will
-default to operate in the browser lab namespace.
-
-Examples:
-
-shivas add attached-device-machine -name machine1 -zone mtv97 -rack rack1 -serial XXX -man manufacturer1 -devicetype apple_phone -target board1 -model model1
-
-shivas add attached-device-machine -f admrequest.json
-Creates an attached device machine by reading a JSON file input.`
-
-	// AddADMText long description for AddADMCmd
+	// AddADMText description for AddAttachedDeviceMachineCmd and AddADMCmd
 	AddADMText string = `Create an attached device (Hardware asset: Android phone, iOS tablet, etc.) to UFS.
 
 This cmd requires the user to set the NAMESPACE in env. Otherwise, it will
 default to operate in the browser lab namespace.
+
+'shivas add adm ...' is an alias of 'shivas add attached-device-machine...'
 
 Examples:
 
@@ -1956,31 +1941,13 @@ The protobuf definition can be found here:
 Machine:
 https://chromium.googlesource.com/infra/infra/+/refs/heads/main/go/src/infra/unifiedfleet/api/v1/models/machine.proto`
 
-	// UpdateAttachedDeviceMachineText long description for UpdateADMCmd
-	UpdateAttachedDeviceMachineText string = `Update an attached device machine by name to UFS.
-
-This cmd requires the user to set the NAMESPACE in env. Otherwise, it will
-default to operate in the browser lab namespace.
-
-Examples:
-shivas update attached-device-machine -f admrequest.json
-Update an attached device machine by reading a JSON file input.
-
-shivas update attached-device-machine -name machine1 -serial XXX_NEW
-Update serial number connected to the attached device machine.
-
-shivas update attached-device-machine -name machine1 -devicetype android_phone -man manufacturer_new
-Update device type and manufacturer of the attached device machine.
-
-shivas update attached-device-machine -name machine1 -tags -
-Delete tags of an existing attached-device-machine entry.
-`
-
-	// UpdateADMText long description for UpdateADMCmd
+	// UpdateADMText description for UpdateAttachedDeviceMachineCmd and UpdateADMCmd
 	UpdateADMText string = `Update an attached device machine by name to UFS.
 
 This cmd requires the user to set the NAMESPACE in env. Otherwise, it will
 default to operate in the browser lab namespace.
+
+'shivas update adm ...' is an alias of 'shivas update attached-device-machine...'
 
 Examples:
 shivas update adm -f admrequest.json
@@ -2026,23 +1993,24 @@ Example attached device machine:
 The protobuf definition of machine is part of
 https://chromium.googlesource.com/infra/infra/+/refs/heads/main/go/src/infra/unifiedfleet/api/v1/models/machine.proto`
 
-	// DeleteAttachedDeviceMachineText long description for DeleteADMCmd
-	DeleteAttachedDeviceMachineText string = `Delete an attached device machine (Hardware asset: Android Phone, iPad, etc.).
-
-Example:
-shivas delete attached-device-machine {Machine Name}
-Deletes the given attached device machine based on machine name.
-`
-	// DeleteADMText long description for DeleteADMCmd
+	// DeleteADMText long description for DeleteAttachedDeviceMachineCmd and DeleteADMCmd
 	DeleteADMText string = `Delete an attached device machine (Hardware asset: Android Phone, iPad, etc.).
+
+This cmd requires the user to set the NAMESPACE in env. Otherwise, it will
+default to operate in the browser lab namespace.
+
+'shivas delete adm ...' is an alias of 'shivas delete attached-device-machine...'
 
 Example:
 shivas delete adm {Machine Name}
 Deletes the given attached device machine based on machine name.
 `
 
-	// AddADHLongDesc long description for AddAttachedDeviceHostCmd and AddADHCmd
-	AddADHLongDesc string = `Add an attached device host on an attached device machine
+	// AddADHText description for AddAttachedDeviceHostCmd and AddADHCmd
+	AddADHText string = `Add an attached device host on an attached device machine
+
+This cmd requires the user to set the NAMESPACE in env. Otherwise, it will
+default to operate in the browser lab namespace.
 
 'shivas add adh ...' is an alias of 'shivas add attached-device-host...'
 
@@ -2094,6 +2062,58 @@ shivas get adh {name1} {name2}
 shivas get adh -state serving -state needs_repair -zone atl97
 
 Gets the attached device host and prints the output in user format.`
+
+	// UpdateADHText description for UpdateAttachedDeviceHostCmd and UpdateADHCmd
+	UpdateADHText string = `Update an attached device host by name to UFS.
+
+This cmd requires the user to set the NAMESPACE in env. Otherwise, it will
+default to operate in the browser lab namespace.
+
+'shivas update adh ...' is an alias of 'shivas update attached-device-host...'
+
+Examples:
+shivas update adh -f adhrequest.json
+Update an attached device host by reading a JSON file input.
+
+shivas update adh -name host1 -machine machine2
+Update machine the attached device host is connected to.
+
+shivas update adh -name host1 -os ios_13.2 -associated-hostname adm1
+Update the os version and associated hostname of the host.
+
+shivas update adh -name host1 -tags -
+Delete tags of an existing adh entry.
+`
+
+	// DeleteADHText long description for DeleteAttachedDeviceHostCmd and DeleteADHCmd
+	DeleteADHText string = `Delete an attached device host.
+
+This cmd requires the user to set the NAMESPACE in env. Otherwise, it will
+default to operate in the browser lab namespace.
+
+'shivas delete adh ...' is an alias of 'shivas delete attached-device-host...'
+
+Example:
+shivas delete adh {Host Name}
+Deletes the given attached device host based on host name.
+`
+
+	// ManageBTPsLongDesc is a long description for Bluetooth peer management subcommands.
+	ManageBTPsLongDesc string = `Manage Bluetooth peers (BTPs) attached to a DUT.
+
+This cmd always runs in the OS namespace. A single DUT can have multiple BTPs. The command
+requires specifying an action which is either add, delete, or replace. Multiple BTPs can
+be specified for each action.
+
+Add adds specified BTPs to the DUT and leaves what is already there untouched.
+Delete deletes sepcified BTPs in the DUT and leaves remamining.
+Replace replaces the entire set of BTPs with the specified list.
+
+Examples:
+shivas add bluetooth-peers -dut {d} -hostname {h1} -hostname {h2}
+shivas delete bluetooth-peers -dut {d} -hostname {h2}
+shivas replace bluetooth-peers -dut {d} -hostname {h3} -hostname {h4} -hostname {h5}
+`
 )
 
 func CronTriggerAvailableJobsString() string {

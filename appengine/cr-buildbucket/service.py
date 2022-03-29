@@ -112,13 +112,13 @@ def peek(bucket_ids, max_builds=None, start_cursor=None):
   bucket_states = _get_bucket_states(bucket_ids)
   active_buckets = []
   for b in bucket_ids:
-    if bucket_states[b].is_paused:
+    if bucket_states[b].is_paused:  # pragma: no cover
       logging.warning('Ignoring paused bucket: %s.', b)
       continue
     active_buckets.append(b)
 
   # Short-circuit: if there are no remaining buckets to query, then we're done.
-  if not active_buckets:
+  if not active_buckets:  # pragma: no cover
     return ([], None)
 
   q = model.Build.query(
@@ -206,32 +206,6 @@ def _check_lease(build, lease_key):
     )
 
 
-def reset(build_id):
-  """Forcibly unleases the build and resets its state.
-
-  Resets status, url and lease_key.
-
-  Returns:
-    The reset Build.
-  """
-
-  @ndb.transactional
-  def txn():
-    build = _get_leasable_build(build_id, user.PERM_BUILDS_RESET)
-    if build.is_ended:
-      raise errors.BuildIsCompletedError('Cannot reset a completed build')
-    build.proto.status = common_pb2.SCHEDULED
-    build.status_changed_time = utils.utcnow()
-    build.clear_lease()
-    build.url = None
-    _fut_results(build.put_async(), events.on_build_resetting_async(build))
-    return build
-
-  build = txn()
-  events.on_build_reset(build)
-  return build
-
-
 def start(build_id, lease_key, url):
   """Marks build as STARTED. Idempotent.
 
@@ -291,7 +265,7 @@ def _get_bucket_states(bucket_ids):
   # Get bucket keys and deduplicate.
   default_states = [model.BucketState(id=b) for b in bucket_ids]
   states = ndb.get_multi(state.key for state in default_states)
-  for i, state in enumerate(states):
+  for i, state in enumerate(states):  # pragma: no cover
     if not state:
       states[i] = default_states[i]
   return dict(zip(bucket_ids, states))
@@ -558,90 +532,12 @@ def cancel_async(build_id, summary_markdown='', result_details=None):
   raise ndb.Return(bundle.build)
 
 
-def delete_many_builds(bucket_id, status, tags=None, created_by=None):
-  if status not in (model.BuildStatus.SCHEDULED, model.BuildStatus.STARTED):
-    raise errors.InvalidInputError(
-        'status can be STARTED or SCHEDULED, not %s' % status
-    )
-  if not user.has_perm(user.PERM_BUCKETS_DELETE_BUILDS, bucket_id):
-    raise user.current_identity_cannot('delete builds of %s', bucket_id)
-  # Validate created_by prior scheduled a push task.
-  created_by = user.parse_identity(created_by)
-  deferred.defer(
-      _task_delete_many_builds,
-      bucket_id,
-      status,
-      tags=tags,
-      created_by=created_by,
-      # Schedule it on the backend module of the same version.
-      # This assumes that both frontend and backend are uploaded together.
-      _target='%s.backend' % modules.get_current_version_name(),
-      # Retry immediatelly.
-      _retry_options=taskqueue.TaskRetryOptions(
-          min_backoff_seconds=0,
-          max_backoff_seconds=1,
-      ),
-  )
-
-
-def _task_delete_many_builds(bucket_id, status, tags=None, created_by=None):
-
-  @ndb.transactional_tasklet
-  def txn(key):
-    bundle = yield model.BuildBundle.get_async(key.id(), infra=True)
-    if not bundle or bundle.build.status_legacy != status:  # pragma: no cover
-      raise ndb.Return(False)
-    futs = [key.delete_async()]
-
-    sw = bundle.infra.parse().swarming
-    if sw.hostname and sw.task_id:  # pragma: no branch
-      futs.append(swarming.cancel_task_transactionally_async(bundle.build, sw))
-    yield futs
-    raise ndb.Return(True)
-
-  @ndb.tasklet
-  def del_if_unchanged(key):
-    if (yield txn(key)):  # pragma: no branch
-      logging.debug('Deleted %s', key.id())
-
-  assert status in (model.BuildStatus.SCHEDULED, model.BuildStatus.STARTED)
-  tags = tags or []
-  created_by = user.parse_identity(created_by)
-  q = model.Build.query(
-      model.Build.bucket_id == bucket_id, model.Build.status_legacy == status
-  )
-  for t in tags:
-    q = q.filter(model.Build.tags == t)
-  if created_by:
-    q = q.filter(model.Build.created_by == created_by)
-  q.map(del_if_unchanged, keys_only=True)
-
-
 def _reject_swarming_bucket(bucket_id):
   config.validate_bucket_id(bucket_id)
   _, cfg = config.get_bucket(bucket_id)
   assert cfg, 'permission check should have failed'
-  if config.is_swarming_config(cfg):
+  if config.is_swarming_config(cfg):  # pragma: no cover
     raise errors.InvalidInputError('Invalid operation on a Swarming bucket')
-
-
-def pause(bucket_id, is_paused):
-  if not user.has_perm(user.PERM_BUCKETS_PAUSE, bucket_id):
-    raise user.current_identity_cannot('pause bucket %s', bucket_id)
-
-  _reject_swarming_bucket(bucket_id)
-
-  @ndb.transactional
-  def try_set_pause():
-    state = (
-        model.BucketState.get_by_id(bucket_id) or
-        model.BucketState(id=bucket_id)
-    )
-    if state.is_paused != is_paused:
-      state.is_paused = is_paused
-      state.put()
-
-  try_set_pause()
 
 
 def _fut_results(*futures):

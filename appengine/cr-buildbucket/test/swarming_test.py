@@ -365,6 +365,50 @@ class TaskDefTest(BaseTest):
         'git-version-canary',
     )
 
+  def test_compute_cipd_input_bbagent_cipd_handling(self):
+    build = self._test_build(
+        input=dict(
+            experiments=[
+                experiments.BBAGENT_DOWNLOAD_CIPD, experiments.USE_BBAGENT
+            ],
+        ),
+    )
+    cipd_input = swarming._compute_cipd_input(build, self.settings)
+    self.assertEqual(
+        test_util.ununicode(cipd_input), {
+            'packages': [{
+                'package_name': 'infra/tools/bbagent',
+                'path': '.',
+                'version': 'luci-runner-version',
+            }]
+        }
+    )
+
+  def test_compute_env_prefixes_bbagent_cipd_handling(self):
+    build = self._test_build(
+        input=dict(
+            experiments=[
+                experiments.BBAGENT_DOWNLOAD_CIPD, experiments.USE_BBAGENT
+            ],
+        ),
+        infra=dict(
+            swarming=dict(
+                caches=[
+                    dict(
+                        path='vpython',
+                        name='vpython',
+                        env_var='VPYTHON_VIRTUALENV_ROOT'
+                    ),
+                ],
+            ),
+        ),
+    )
+    env_prefixes = swarming._compute_env_prefixes(build, self.settings)
+    self.assertEqual(
+        test_util.ununicode(env_prefixes),
+        [{'key': 'VPYTHON_VIRTUALENV_ROOT', 'value': ['cache/vpython']}]
+    )
+
   def test_properties(self):
     self.patch(
         'components.auth.get_current_identity',
@@ -686,6 +730,24 @@ class TaskDefTest(BaseTest):
   def test_parent_run_id(self):
     build = self._test_build(
         infra=dict(swarming=dict(parent_run_id='deadbeef'))
+    )
+    actual = self.compute_task_def(build)
+    self.assertEqual(actual['parent_task_id'], 'deadbeef')
+
+  def test_parent(self):
+    build = self._test_build(
+        infra=dict(swarming=dict(parent_run_id='deadbeef')),
+        ancestor_ids=[123],
+        input=dict(experiments=['luci.buildbucket.parent_tracking']),
+    )
+    actual = self.compute_task_def(build)
+    self.assertIsNone(actual.get('parent_task_id'))
+
+  def test_parent_no_exp(self):
+    # Even though the build has a parent,
+    build = self._test_build(
+        infra=dict(swarming=dict(parent_run_id='deadbeef')),
+        ancestor_ids=[123],
     )
     actual = self.compute_task_def(build)
     self.assertEqual(actual['parent_task_id'], 'deadbeef')

@@ -334,17 +334,22 @@ func processMachineLSEUpdateMask(ctx context.Context, oldMachinelse *ufspb.Machi
 		case "mlseprototype":
 			oldMachinelse.MachineLsePrototype = machinelse.GetMachineLsePrototype()
 		case "osVersion":
-			if oldMachinelse.GetChromeBrowserMachineLse() == nil {
-				oldMachinelse.Lse = &ufspb.MachineLSE_ChromeBrowserMachineLse{
-					ChromeBrowserMachineLse: &ufspb.ChromeBrowserMachineLSE{},
+			if oldMachinelse.GetChromeBrowserMachineLse() != nil {
+				if oldMachinelse.GetChromeBrowserMachineLse().GetOsVersion() == nil {
+					oldMachinelse.GetChromeBrowserMachineLse().OsVersion = &ufspb.OSVersion{
+						Value: machinelse.GetChromeBrowserMachineLse().GetOsVersion().GetValue(),
+					}
+				} else {
+					oldMachinelse.GetChromeBrowserMachineLse().GetOsVersion().Value = machinelse.GetChromeBrowserMachineLse().GetOsVersion().GetValue()
 				}
-			}
-			if oldMachinelse.GetChromeBrowserMachineLse().GetOsVersion() == nil {
-				oldMachinelse.GetChromeBrowserMachineLse().OsVersion = &ufspb.OSVersion{
-					Value: machinelse.GetChromeBrowserMachineLse().GetOsVersion().GetValue(),
+			} else if oldMachinelse.GetAttachedDeviceLse() != nil {
+				if oldMachinelse.GetAttachedDeviceLse().GetOsVersion() == nil {
+					oldMachinelse.GetAttachedDeviceLse().OsVersion = &ufspb.OSVersion{
+						Value: machinelse.GetAttachedDeviceLse().GetOsVersion().GetValue(),
+					}
+				} else {
+					oldMachinelse.GetAttachedDeviceLse().GetOsVersion().Value = machinelse.GetAttachedDeviceLse().GetOsVersion().GetValue()
 				}
-			} else {
-				oldMachinelse.GetChromeBrowserMachineLse().GetOsVersion().Value = machinelse.GetChromeBrowserMachineLse().GetOsVersion().GetValue()
 			}
 		case "osImage":
 			if oldMachinelse.GetChromeBrowserMachineLse() == nil {
@@ -374,6 +379,12 @@ func processMachineLSEUpdateMask(ctx context.Context, oldMachinelse *ufspb.Machi
 			oldMachinelse.Description = machinelse.Description
 		case "deploymentTicket":
 			oldMachinelse.DeploymentTicket = machinelse.GetDeploymentTicket()
+		case "assocHostname":
+			oldMachinelse.GetAttachedDeviceLse().AssociatedHostname = machinelse.GetAttachedDeviceLse().GetAssociatedHostname()
+		case "assocHostPort":
+			oldMachinelse.GetAttachedDeviceLse().AssociatedHostPort = machinelse.GetAttachedDeviceLse().GetAssociatedHostPort()
+		case "schedulable":
+			oldMachinelse.Schedulable = machinelse.GetSchedulable()
 		}
 	}
 	// return existing/old machinelse with new updated values
@@ -556,7 +567,7 @@ func DeleteMachineLSE(ctx context.Context, id string) error {
 			vmIDs = append(vmIDs, vm.GetName())
 			hc.LogVMChanges(&ufspb.VM{Name: vm.GetName()}, nil)
 		}
-		if vmIDs != nil && len(vmIDs) > 0 {
+		if len(vmIDs) > 0 {
 			if err := inventory.BatchDeleteVMs(ctx, vmIDs); err != nil {
 				return err
 			}
@@ -802,7 +813,6 @@ func deleteNonExistingMachineLSEs(ctx context.Context, machineLSEs []*ufspb.Mach
 		return nil, err
 	}
 	var toDelete []string
-	var toDeleteDHCPHost []string
 	for _, sr := range resp.Passed() {
 		s := sr.Data.(*ufspb.MachineLSE)
 		if lseType == "browser" && s.GetChromeosMachineLse() != nil {
@@ -813,12 +823,6 @@ func deleteNonExistingMachineLSEs(ctx context.Context, machineLSEs []*ufspb.Mach
 		}
 		if _, ok := resMap[s.GetName()]; !ok {
 			toDelete = append(toDelete, s.GetName())
-			toDeleteDHCPHost = append(toDeleteDHCPHost, s.GetName())
-		}
-		if s.GetChromeBrowserMachineLse() != nil {
-			for _, vm := range s.GetChromeBrowserMachineLse().GetVms() {
-				toDeleteDHCPHost = append(toDeleteDHCPHost, vm.GetHostname())
-			}
 		}
 	}
 	logging.Infof(ctx, "Deleting %d non-existing machine lses", len(toDelete))
@@ -859,12 +863,10 @@ func deleteNonExistingVMs(ctx context.Context, vms []*ufspb.VM, pageSize int) (*
 		return nil, err
 	}
 	var toDelete []string
-	var toDeleteDHCPHost []string
 	for _, sr := range resp.Passed() {
 		s := sr.Data.(*ufspb.VM)
 		if _, ok := resMap[s.GetName()]; !ok {
 			toDelete = append(toDelete, s.GetName())
-			toDeleteDHCPHost = append(toDeleteDHCPHost, s.GetName())
 		}
 	}
 	logging.Infof(ctx, "Deleting %d non-existing vms", len(toDelete))
@@ -1025,34 +1027,6 @@ func updateServoV3EntryInLabstation(ctx context.Context, servo *chromeosLab.Serv
 	// Don't store servo serial for servo V3.
 	servo.ServoSerial = ""
 	labstation.GetChromeosMachineLse().GetDeviceLse().GetLabstation().Servos = []*chromeosLab.Servo{servo}
-	return nil
-}
-
-// replaceServoEntryInLabstation replaces oldServo entry with newServo entry in the Labstation.
-// oldServo => old record of servo as found in the DUT.
-// newServo => new servo replacing the old one.
-// labstation => current machine lse of the labstation.
-func replaceServoEntryInLabstation(ctx context.Context, oldServo, newServo *chromeosLab.Servo, labstation *ufspb.MachineLSE) error {
-	if newServo == nil {
-		// Don't use this API to remove servo from labstation.
-		return status.Errorf(codes.Internal, "replaceServoEntryInLabstation[Wrong Usage]: Use removeServoEntryFromLabstation")
-	}
-	if oldServo == nil {
-		// Don't use this API to append servo to labstation.
-		return status.Errorf(codes.Internal, "replaceServoEntryInLabstation[Wrong Usage]: Use appendServoEntryToLabstation")
-	}
-	// Check if its a servo V3 device.
-	if util.ServoV3HostnameRegex.MatchString(labstation.GetHostname()) {
-		return updateServoV3EntryInLabstation(ctx, newServo, labstation)
-	}
-	// Remove oldServo from labstation.
-	if err := removeServoEntryFromLabstation(ctx, oldServo, labstation); err != nil {
-		return errors.Annotate(err, "replaceServoEntryInLabstation - Cannot remove old servo entry").Err()
-	}
-	// Append newServo to the labstation.
-	if err := appendServoEntryToLabstation(ctx, newServo, labstation); err != nil {
-		return errors.Annotate(err, "replaceServoEntryInLabstation - Cannot add new servo entry to labstation").Err()
-	}
 	return nil
 }
 
@@ -1440,16 +1414,26 @@ func validateMachineLSEUpdateMask(machinelse *ufspb.MachineLSE, mask *field_mask
 			case "osImage":
 				fallthrough
 			case "osVersion":
-				if machinelse.GetChromeBrowserMachineLse() == nil {
-					return status.Error(codes.InvalidArgument, "validateMachineLSEUpdateMask - browser machine lse cannot be empty/nil.")
+				if machinelse.GetChromeBrowserMachineLse() == nil && machinelse.GetAttachedDeviceLse() == nil {
+					return status.Error(codes.InvalidArgument, "validateMachineLSEUpdateMask - browser / attached device machine lse cannot be empty/nil.")
 				}
-				if machinelse.GetChromeBrowserMachineLse().GetOsVersion() == nil {
-					return status.Error(codes.InvalidArgument, "validateMachineLSEUpdateMask - Osverison cannot be empty/nil.")
+				if (machinelse.GetChromeBrowserMachineLse() != nil && machinelse.GetChromeBrowserMachineLse().GetOsVersion() == nil) ||
+					(machinelse.GetAttachedDeviceLse() != nil && machinelse.GetAttachedDeviceLse().GetOsVersion() == nil) {
+					return status.Error(codes.InvalidArgument, "validateMachineLSEUpdateMask - OsVersion cannot be empty/nil.")
 				}
 			case "vmCapacity":
 				if machinelse.GetChromeBrowserMachineLse() == nil {
 					return status.Error(codes.InvalidArgument, "validateMachineLSEUpdateMask - browser machine lse cannot be empty/nil.")
 				}
+			case "assocHostname":
+				if machinelse.GetAttachedDeviceLse() == nil {
+					return status.Error(codes.InvalidArgument, "validateMachineLSEUpdateMask - machine is not an attached device")
+				}
+			case "assocHostPort":
+				if machinelse.GetAttachedDeviceLse() == nil {
+					return status.Error(codes.InvalidArgument, "validateMachineLSEUpdateMask - machine is not an attached device")
+				}
+			case "schedulable":
 			case "deploymentTicket":
 			case "tags":
 			case "description":
@@ -1695,6 +1679,138 @@ func UpdateLabMeta(ctx context.Context, meta *ufspb.LabMeta) error {
 		logging.Errorf(ctx, "UpdateLabMeta (%s, %s) - %s", meta.GetChromeosDeviceId(), meta.GetHostname(), err)
 		return err
 	}
+	return nil
+}
+
+// UpdateRecoveryLabdata updates only labdata and resource state for a given ChromeOS DUT.
+func updateRecoveryLabData(ctx context.Context, hostname string, resourceState ufspb.State, labData *ufsAPI.UpdateDeviceRecoveryDataRequest_LabData) error {
+	f := func(ctx context.Context) error {
+		lse, err := inventory.GetMachineLSE(ctx, hostname)
+		if err != nil {
+			return err
+		}
+		hc := getHostHistoryClient(lse)
+		oldLSE := proto.Clone(lse).(*ufspb.MachineLSE)
+
+		// Apply resource_state edits
+		lse.ResourceState = resourceState
+		if labData == nil {
+			// TODO add to Proto labdata - Not be updated if labdata is nil
+			logging.Warningf(ctx, "updateRecoveryLabData: empty labData(%q)", labData)
+		} else {
+			dut := lse.GetChromeosMachineLse().GetDeviceLse().GetDut()
+			if dut == nil {
+				logging.Warningf(ctx, "%s is not a valid Chromeos DUT", lse.GetName())
+				return nil
+			}
+			// Periphrals cannot be nil for valid DUT
+			if dut.GetPeripherals() == nil {
+				dut.Peripherals = &chromeosLab.Peripherals{}
+			}
+			peri := dut.GetPeripherals()
+			// Copy for logging
+			// Apply smart usb hub edits
+			peri.SmartUsbhub = labData.GetSmartUsbhub()
+
+			// Servo cannot be nil for valid DUT
+			if peri.GetServo() == nil {
+				peri.Servo = &chromeosLab.Servo{}
+			}
+			// Apply servo edits
+			if err = editRecoveryPeripheralServo(peri.GetServo(), labData); err != nil {
+				return err
+			}
+			// Wifi cannot be nil for valid DUT
+			if peri.GetWifi() == nil {
+				peri.Wifi = &chromeosLab.Wifi{}
+			}
+			// Apply wifirouters edits
+			if err = editRecoveryPeripheralWifi(ctx, peri.GetWifi(), labData); err != nil {
+				return err
+			}
+
+			if err = updateBluetoothPeerStates(peri, labData.GetBlueoothPeers()); err != nil {
+				// TODO(b/227151806): Return error once BTP data is backfilled.
+				// return err
+			}
+		}
+		if _, err = inventory.BatchUpdateMachineLSEs(ctx, []*ufspb.MachineLSE{lse}); err != nil {
+			return errors.Annotate(err, "unable to update labData for %s", lse.Name).Err()
+		}
+		hc.LogMachineLSEChanges(oldLSE, lse)
+		return hc.SaveChangeEvents(ctx)
+
+	}
+	if err := datastore.RunInTransaction(ctx, f, nil); err != nil {
+		logging.Errorf(ctx, "updateRecoveryDataDeviceLSE  (%s) - %s", hostname, err)
+		return err
+	}
+	return nil
+}
+
+// updateBluetoothPeerStates updates p.BluetoothPeers with state from btps. It returns an error if a hostname
+// that is not part of p is sent in btps. It handles nil btps.
+func updateBluetoothPeerStates(p *chromeosLab.Peripherals, btps []*ufsAPI.UpdateDeviceRecoveryDataRequest_BluetoothPeer) error {
+	if len(btps) == 0 {
+		return nil
+	}
+	ufsBTPs := make(map[string]*chromeosLab.BluetoothPeer)
+	for _, btp := range p.GetBluetoothPeers() {
+		d := btp.GetDevice()
+		if _, ok := d.(*chromeosLab.BluetoothPeer_RaspberryPi); !ok {
+			return errors.Reason("unsupported BTP device type %T", d).Err()
+		}
+		ufsBTPs[btp.GetRaspberryPi().GetHostname()] = btp
+	}
+
+	for _, btp := range btps {
+		b, ok := ufsBTPs[btp.GetHostname()]
+		if !ok {
+			return errors.Reason("unknown BTP with hostname %q recieved from lab", btp.GetHostname()).Err()
+		}
+		b.GetRaspberryPi().State = btp.GetState()
+	}
+	return nil
+}
+
+// editRecoveryPeripheralServo edits peripherals servo
+func editRecoveryPeripheralServo(servo *chromeosLab.Servo, labData *ufsAPI.UpdateDeviceRecoveryDataRequest_LabData) error {
+	servo.ServoType = labData.GetServoType()
+	servo.ServoTopology = labData.GetServoTopology()
+	servo.ServoComponent = extractServoComponents(labData.GetServoType())
+	return nil
+}
+
+// editRecoveryPeripheralServo edits peripherals Wifi
+func editRecoveryPeripheralWifi(ctx context.Context, wifi *chromeosLab.Wifi, labData *ufsAPI.UpdateDeviceRecoveryDataRequest_LabData) error {
+	// labDataRouterMap is Wifirouters as hostname-> wifirouter hashmap for easier individual Wifirouter update
+	labDataRouterMap := make(map[string]*ufsAPI.UpdateDeviceRecoveryDataRequest_WifiRouter)
+	for _, labDataRouter := range labData.GetWifiRouters() {
+		labDataRouterMap[labDataRouter.GetHostname()] = labDataRouter
+	}
+	newRouters := []*chromeosLab.WifiRouter{}
+	for _, lseRouter := range wifi.GetWifiRouters() {
+		// edit wifirouter if router already exists in UFS
+		if labDataRouter, ok := labDataRouterMap[lseRouter.GetHostname()]; ok {
+			logging.Infof(ctx, "editRecoverPeripheralWifi - edit wifi router(%s), found in labdata.", lseRouter.GetHostname())
+			lseRouter.State = labDataRouter.GetState()
+			newRouters = append(newRouters, lseRouter)
+			delete(labDataRouterMap, lseRouter.GetHostname())
+		} else {
+			// remove from UFS if not in lab data
+			logging.Infof(ctx, "editRecoverPeripheralWifi - remove wifi router(%s), not found in labdata.", lseRouter.GetHostname())
+		}
+	}
+	// add new wifirouters to UFS
+	for hostname := range labDataRouterMap {
+		logging.Infof(ctx, "editRecoverPeripheralWifi - add wifi router(%s) new in labdata.", hostname)
+		newRouters = append(newRouters, &chromeosLab.WifiRouter{
+			Hostname: hostname,
+			State:    labDataRouterMap[hostname].GetState(),
+		})
+	}
+	// assign updated routers to Wifi
+	wifi.WifiRouters = newRouters
 	return nil
 }
 

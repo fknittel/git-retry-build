@@ -15,6 +15,7 @@ import (
 
 	"infra/cros/recovery/internal/execs"
 	"infra/cros/recovery/internal/log"
+	"infra/cros/recovery/logger/metrics"
 	"infra/cros/recovery/tlw"
 )
 
@@ -45,10 +46,10 @@ func updateCr50LabelExec(ctx context.Context, info *execs.ExecInfo) error {
 		// PVT image has a odd major version number.
 		// prePVT image has an even major version number.
 		info.RunArgs.DUT.Cr50Phase = tlw.Cr50PhasePVT
-		log.Info(ctx, "update DUT's Cr50 to be %s", tlw.Cr50PhasePVT)
+		log.Infof(ctx, "update DUT's Cr50 to be %s", tlw.Cr50PhasePVT)
 	} else {
 		info.RunArgs.DUT.Cr50Phase = tlw.Cr50PhasePREPVT
-		log.Info(ctx, "update DUT's Cr50 to be %s", tlw.Cr50PhasePREPVT)
+		log.Infof(ctx, "update DUT's Cr50 to be %s", tlw.Cr50PhasePREPVT)
 	}
 	return nil
 }
@@ -74,10 +75,10 @@ func updateCr50KeyIdLabelExec(ctx context.Context, info *execs.ExecInfo) error {
 	}
 	if roKeyID&(1<<2) != 0 {
 		info.RunArgs.DUT.Cr50KeyEnv = tlw.Cr50KeyEnvProd
-		log.Info(ctx, "update DUT's Cr50 Key Env to be %s", tlw.Cr50KeyEnvProd)
+		log.Infof(ctx, "update DUT's Cr50 Key Env to be %s", tlw.Cr50KeyEnvProd)
 	} else {
 		info.RunArgs.DUT.Cr50KeyEnv = tlw.Cr50KeyEnvDev
-		log.Info(ctx, "update DUT's Cr50 Key Env to be %s", tlw.Cr50KeyEnvDev)
+		log.Infof(ctx, "update DUT's Cr50 Key Env to be %s", tlw.Cr50KeyEnvDev)
 	}
 	return nil
 }
@@ -94,7 +95,7 @@ const (
 // Ex: ["flash_timeout:x", "wait_timeout:x"]
 func reflashCr50FwExec(ctx context.Context, info *execs.ExecInfo) error {
 	argsMap := info.GetActionArgs(ctx)
-	// Timeout for executing the cr 50 fw flash command on the DUT. Default to be 120s.
+	// Timeout for executing the cr50 fw flash command on the DUT. Default to be 120s.
 	flashTimeout := argsMap.AsDuration(ctx, "flash_timeout", 120, time.Second)
 	// Delay to wait for the fw flash command to be efftive. Default to be 30s.
 	waitTimeout := argsMap.AsDuration(ctx, "wait_timeout", 30, time.Second)
@@ -105,6 +106,25 @@ func reflashCr50FwExec(ctx context.Context, info *execs.ExecInfo) error {
 	} else {
 		updateCmd = fmt.Sprintf(updateCmd, "prod")
 	}
+	karteAction := &metrics.Action{
+		// TODO(@gregorynisbet): When karte' Search API is capable of taking in asset tag,
+		// change the query to use asset tag instead of using hostname.
+		Hostname:   info.RunArgs.DUT.Name,
+		ActionKind: metrics.Cr50FwReflashKind,
+		StartTime:  time.Now(),
+		Status:     metrics.ActionStatusFail,
+	}
+	if mErr := info.RunArgs.Metrics.Create(ctx, karteAction); mErr != nil {
+		log.Debugf(ctx, "Reflash cr50 firmware: cannot create karte metrics: %s", mErr)
+	}
+	defer func() {
+		// Recoding cr 50 fw reflash to Karte.
+		log.Debugf(ctx, "Updating cr 50 fw reflash record in Karte.")
+		karteAction.StopTime = time.Now()
+		if mErr := info.RunArgs.Metrics.Update(ctx, karteAction); mErr != nil {
+			log.Debugf(ctx, "Reflash cr 50 fw: Metrics error: %s", mErr)
+		}
+	}()
 	run := info.NewRunner(info.RunArgs.DUT.Name)
 	// For "gsctool", we use the traditional runner because the exit code of both 0 and 1
 	// indicates successful execution of the command.
@@ -115,24 +135,24 @@ func reflashCr50FwExec(ctx context.Context, info *execs.ExecInfo) error {
 	if err != nil {
 		errorCode, ok := errors.TagValueIn(execs.ErrCodeTag, err)
 		if !ok {
-			return errors.Annotate(err, "reflash cr 50 fw: cannot find error code").Err()
+			return errors.Annotate(err, "reflash cr50 fw: cannot find error code").Err()
 		}
 		if errorCode != 1 {
-			return errors.Annotate(err, "reflash cr 50 fw: fail to flash %q", info.RunArgs.DUT.Cr50Phase).Err()
+			return errors.Annotate(err, "reflash cr50 fw: fail to flash %q", info.RunArgs.DUT.Cr50Phase).Err()
 		}
 	}
-	log.Debug(ctx, "cr 50 fw update successfully.")
-	// reboot the DUT for the reflash of the cr 50 fw to be effective.
+	log.Debugf(ctx, "cr50 fw update successfully.")
+	// reboot the DUT for the reflash of the cr50 fw to be effective.
 	if out, err := run(ctx, 30*time.Second, "reboot && exit"); err != nil {
 		// Client closed connected as rebooting.
-		log.Debug(ctx, "Client exit as device rebooted: %s", err)
-		return errors.Annotate(err, "reflash cr 50 fw").Err()
+		log.Debugf(ctx, "Client exit as device rebooted: %s", err)
+		karteAction.FailReason = fmt.Sprintf("%s : reflash cr50 fw", err)
+		return errors.Annotate(err, "reflash cr50 fw").Err()
 	} else {
-		log.Debug(ctx, "Stdout: %s", out)
+		log.Debugf(ctx, "Stdout: %s", out)
 	}
-	// TODO: (@yunzhiyu & @gregorynisbet)
-	// Record cr50 fw update attempt along with time to Karte.
-	log.Debug(ctx, "waiting for %d seconds to let cr50 fw reflash be effective.", waitTimeout)
+	karteAction.Status = metrics.ActionStatusSuccess
+	log.Debugf(ctx, "waiting for %d seconds to let cr50 fw reflash be effective.", waitTimeout)
 	time.Sleep(waitTimeout)
 	return nil
 }
@@ -140,5 +160,5 @@ func reflashCr50FwExec(ctx context.Context, info *execs.ExecInfo) error {
 func init() {
 	execs.Register("cros_update_cr50_label", updateCr50LabelExec)
 	execs.Register("cros_update_cr50_key_id_label", updateCr50KeyIdLabelExec)
-	execs.Register("reflash_cr_50_fw", reflashCr50FwExec)
+	execs.Register("cros_reflash_cr50_fw", reflashCr50FwExec)
 }

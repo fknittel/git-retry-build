@@ -28,26 +28,29 @@ func NewMetrics(ctx context.Context, c *kclient.Config, o ...kclient.Option) (me
 	return &client{impl: innerClient}, nil
 }
 
-// Create creates an action and returns the action that was just created.
-// Note that an action contains zero or more observations in it and that observations are not
-// separate.
-func (c *client) Create(ctx context.Context, action *metrics.Action) (*metrics.Action, error) {
+// Create takes a reference to an action, creates the action in Karte, and reseats the action
+// reference on success.
+// Create mutates its argument action.
+func (c *client) Create(ctx context.Context, action *metrics.Action) error {
+	if c == nil {
+		return errors.Reason("create: client cannot be nil").Err()
+	}
 	karteResp, err := c.impl.CreateAction(
 		ctx,
 		&kartepb.CreateActionRequest{
 			Action: convertActionToKarteAction(action),
 		},
 	)
-	if err != nil {
-		return nil, errors.Annotate(err, "karte create").Err()
+	if err == nil {
+		*action = *(convertKarteActionToAction(karteResp))
 	}
-	return convertKarteActionToAction(karteResp), nil
+	return errors.Annotate(err, "create").Err()
 }
 
 // Update takes an action and updates the entry in the Karte service, the source of truth.
 // TODO(gregorynisbet): This implementation is not complete. A metrics action has observations attached to it.
 // Updating Karte will require inspecting those observations and potentially updating or replacing them.
-func (c *client) Update(ctx context.Context, action *metrics.Action) (*metrics.Action, error) {
+func (c *client) Update(ctx context.Context, action *metrics.Action) error {
 	a := convertActionToKarteAction(action)
 	karteResp, err := c.impl.UpdateAction(
 		ctx,
@@ -57,9 +60,10 @@ func (c *client) Update(ctx context.Context, action *metrics.Action) (*metrics.A
 		},
 	)
 	if err != nil {
-		return nil, errors.Annotate(err, "karte update").Err()
+		return errors.Annotate(err, "karte update").Err()
 	}
-	return convertKarteActionToAction(karteResp), nil
+	*action = *convertKarteActionToAction(karteResp)
+	return nil
 }
 
 // defaultResultSetSize is the number of records to return by default from Karte.

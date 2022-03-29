@@ -44,8 +44,11 @@ func crosRepairActions() map[string]*Action {
 				"dut_has_board_name",
 				"dut_has_model_name",
 			},
-			RecoveryActions: []string{"Restore AC detection by EC console"},
-			ExecName:        "cros_ping",
+			RecoveryActions: []string{
+				"Restore AC detection by EC console",
+				"Update FW from fw-image by servo",
+			},
+			ExecName: "cros_ping",
 			ExecTimeout: &durationpb.Duration{
 				Seconds: 15,
 			},
@@ -62,6 +65,7 @@ func crosRepairActions() map[string]*Action {
 				"Trigger kernel panic to reset the whole board and try ssh to DUT",
 				"cros_servo_cr50_reboot_repair",
 				"Install OS in recovery mode by booting from servo USB-drive",
+				"Update FW from fw-image by servo",
 			},
 		},
 		"internal_storage": {
@@ -193,6 +197,7 @@ func crosRepairActions() map[string]*Action {
 			RecoveryActions: []string{
 				"Install OS in recovery mode by booting from servo USB-drive",
 				"Quick provision OS",
+				"Update FW from fw-image by servo",
 			},
 			ExecName: "cros_is_firmware_in_good_state",
 		},
@@ -378,6 +383,12 @@ func crosRepairActions() map[string]*Action {
 			},
 			ExecName: "cros_is_battery_present",
 		},
+		"No Battery is present on device": {
+			Conditions: []string{
+				"Battery is present on device",
+			},
+			ExecName: "sample_fail",
+		},
 		"wifi_audit": {
 			Docs: []string{
 				"Check wifi on the DUT is normal and update wifi hardware state accordingly.",
@@ -449,14 +460,14 @@ func crosRepairActions() map[string]*Action {
 				"cros_storage_writing",
 			},
 			RecoveryActions: []string{
-				"cros_switch_to_secure_mode_and_reboot",
+				"Switch to secure-mode and reboot",
 			},
 			ExecName: "cros_is_not_in_dev_mode",
 		},
 		"cros_hwid_info": {
 			Conditions: []string{
 				"is_not_flex_board",
-				"dut_has_hwid_info",
+				"dut_has_hwid",
 			},
 			Dependencies: []string{
 				"cros_storage_writing",
@@ -466,25 +477,30 @@ func crosRepairActions() map[string]*Action {
 		"cros_serial_number_info": {
 			Conditions: []string{
 				"is_not_flex_board",
-				"dut_has_serial_number_info",
+				"dut_has_serial_number",
 			},
 			Dependencies: []string{
 				"cros_storage_writing",
 			},
 			ExecName: "cros_match_serial_number_inventory",
 		},
-		"dut_has_hwid_info": {
-			ExecName: "sample_pass",
+		"dut_has_hwid": {
+			Docs: []string{
+				"Check whether the DUT information includes its HWID.",
+			},
 		},
-		"dut_has_serial_number_info": {
-			ExecName: "sample_pass",
+		"dut_has_serial_number": {
+			Docs: []string{
+				"Check whether the DUT information includes its ",
+				"serial number.",
+			},
 		},
 		"cros_storage_writing": {
 			Dependencies: []string{
 				"cros_ssh",
 			},
 			RecoveryActions: []string{
-				"cros_switch_to_secure_mode_and_reboot",
+				"Switch to secure-mode and reboot",
 				"Install OS in recovery mode by booting from servo USB-drive",
 				"Quick provision OS",
 				"Repair by powerwash",
@@ -606,6 +622,19 @@ func crosRepairActions() map[string]*Action {
 			},
 			ExecName: "sample_fail",
 		},
+		"Servo USB-Key needs to be reflashed": {
+			Docs: []string{
+				"Check if it is time to download image to servo usbkey.",
+				"If so, then download the stable image to usbkey.",
+			},
+			Conditions: []string{
+				"cros_is_time_to_force_download_image_to_usbkey",
+			},
+			Dependencies: []string{
+				"Download stable image to USB-key",
+			},
+			ExecName: "sample_pass",
+		},
 		"Servo has USB-key with require image": {
 			Docs: []string{
 				"USB-drive contains stable image on it.",
@@ -631,6 +660,17 @@ func crosRepairActions() map[string]*Action {
 			},
 			ExecName:    "servo_download_image_to_usb",
 			ExecTimeout: &durationpb.Duration{Seconds: 3000},
+		},
+		"cros_is_time_to_force_download_image_to_usbkey": {
+			Docs: []string{
+				"Check if it is time to force download image to usbkey",
+				"from the number of failed recoveries since last successful PARIS repair task.",
+			},
+			ExecExtraArgs: []string{
+				"task_name:recovery",
+				"repair_failed_count:1",
+				"repair_failed_interval:10",
+			},
 		},
 		"Match provision labels": {
 			Docs: []string{
@@ -674,7 +714,7 @@ func crosRepairActions() map[string]*Action {
 			},
 			ExecName: "sample_pass",
 		},
-		"cros_switch_to_secure_mode_and_reboot": {
+		"Switch to secure-mode and reboot": {
 			Docs: []string{
 				"This repair action utilizes the dependent actions to set the",
 				" GBB flags and disable booting into dev-mode. Then it reboots",
@@ -682,15 +722,17 @@ func crosRepairActions() map[string]*Action {
 			},
 			Conditions: []string{"Pools required to be in Secure mode"},
 			Dependencies: []string{
-				"Reset GBB flags",
+				"Reset GBB flags by host",
 				"cros_switch_to_secure_mode",
-				"cros_reboot",
+				"Simple reboot",
+				// Waiting to boot to tell if switch was successful.
+				"Wait DUT to be pingable after reset",
 			},
 			ExecName: "sample_pass",
 		},
-		"Reset GBB flags": {
+		"Reset GBB flags by host": {
 			Docs: []string{
-				"This action sets the GBB flags.",
+				"This action sets the GBB flags to 0x0.",
 			},
 			ExecName:               "cros_set_gbb_flags",
 			ExecTimeout:            &durationpb.Duration{Seconds: 3600},
@@ -955,13 +997,58 @@ func crosRepairActions() map[string]*Action {
 				"reovery mode with active PD, so we will change it to ",
 				"sink-mode if required.",
 			},
+			Conditions: []string{
+				"Pools required to be in Secure mode",
+			},
 			Dependencies: []string{
+				"Servo USB-Key needs to be reflashed",
 				"Servo has USB-key with require image",
 				"cros_update_provision_os_version",
 			},
 			ExecName:      "os_install_repair",
 			ExecExtraArgs: []string{"halt_timeout:120"},
 			ExecTimeout:   &durationpb.Duration{Seconds: 3600},
+		},
+		"Install OS in dev mode by booting from servo USB-drive": {
+			Docs: []string{
+				"This action installs the test image on DUT after ",
+				"booking the DUT in dev mode.",
+			},
+			Conditions: []string{
+				"Pools allowed to stay in DEV mode",
+			},
+			Dependencies: []string{
+				"Boot DUT from USB in DEV mode",
+				"Device booted from USB-drive",
+				"Run install after boot from USB-drive",
+				"Cold reset DUT by servo and wait to boot",
+				"Wait DUT to be SSHable after reset",
+			},
+			ExecName: "sample_pass",
+		},
+		"Cold reset DUT by servo and wait to boot": {
+			Docs: []string{"Cold reset device by servo and wait for DUT to become ping-able."},
+			Dependencies: []string{
+				"dut_servo_host_present",
+				"servo_state_is_working",
+				"Cold reset DUT by servo",
+				"Wait DUT to be pingable after reset",
+			},
+			ExecName:   "sample_pass",
+			RunControl: 1,
+		},
+		"Cold reset DUT by servo": {
+			Docs: []string{"Cold reset device by servo and do not wait."},
+			Dependencies: []string{
+				"dut_servo_host_present",
+				"servo_state_is_working",
+			},
+			ExecName: "servo_set",
+			ExecExtraArgs: []string{
+				"command:power_state",
+				"string_value:reset",
+			},
+			RunControl: 1,
 		},
 		"Pools allowed to stay in DEV mode": {
 			Docs: []string{
@@ -992,8 +1079,20 @@ func crosRepairActions() map[string]*Action {
 			},
 			Dependencies: []string{
 				"Set default boot as disk",
+				"Simple reboot",
 			},
-			ExecName: "cros_reboot",
+			ExecName:   "sample_pass",
+			RunControl: 1,
+		},
+		"Simple reboot": {
+			Docs: []string{
+				"Simple un-blocker reboot.",
+			},
+			ExecName: "cros_run_shell_command",
+			ExecExtraArgs: []string{
+				"reboot && exit",
+			},
+			RunControl: 1,
 		},
 		"Set default boot as disk": {
 			Docs: []string{
@@ -1038,6 +1137,48 @@ func crosRepairActions() map[string]*Action {
 				"Quick provision OS",
 			},
 			ExecName: "sample_pass",
+		},
+		"Update FW from fw-image by servo": {
+			Docs: []string{
+				"Download fw-image specified in stable version and flash EC/AP to the DUT by servo",
+				"Set timeout for 100 minutes for now as = 10m(download)+ 7*3m(extraction-file)+10m(ec-update)+30m(ap-update).",
+				"The time will be updated later based on collected metrics",
+				"Each operation with extraction files can take up to a few minutes.",
+				"Ap update on the DUT can take up to 30 minutes",
+			},
+			Conditions: []string{
+				"dut_servo_host_present",
+				"servo_state_is_working",
+			},
+			Dependencies: []string{
+				"has_stable_version_fw_version",
+			},
+			ExecName: "cros_update_fw_with_fw_image_by_servo_from",
+			ExecExtraArgs: []string{
+				"update_ec:true",
+				"update_ap:true",
+				"download_timeout:600",
+			},
+			ExecTimeout: &durationpb.Duration{
+				Seconds: 6000,
+			},
+		},
+		"Boot DUT from USB in DEV mode": {
+			Docs: []string{
+				"Restart and try to boot from USB-drive",
+				"First boot in dev mode can take time so set boot time to 10 minutes.",
+			},
+			ExecName: "cros_dev_mode_boot_from_servo_usb_drive",
+			ExecExtraArgs: []string{
+				"boot_timeout:600",
+				"retry_interval:2",
+			},
+			ExecTimeout: &durationpb.Duration{Seconds: 900},
+		},
+		"Run install after boot from USB-drive": {
+			Docs:        []string{"Perform install process"},
+			ExecName:    "cros_run_chromeos_install_command_after_boot_usbdrive",
+			ExecTimeout: &durationpb.Duration{Seconds: 1200},
 		},
 	}
 }
