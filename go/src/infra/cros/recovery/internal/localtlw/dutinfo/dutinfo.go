@@ -6,13 +6,11 @@
 package dutinfo
 
 import (
-	"context"
 	"fmt"
 	"runtime/debug"
 	"strings"
 
 	"go.chromium.org/luci/common/errors"
-	"go.chromium.org/luci/common/logging"
 
 	"infra/cros/dutstate"
 	"infra/cros/recovery/tlw"
@@ -39,74 +37,61 @@ func ConvertDut(data *ufspb.ChromeOSDeviceData) (dut *tlw.Dut, err error) {
 	return nil, errors.Reason("convert dut: unexpected case!").Err()
 }
 
+// ConvertAttachedDeviceToTlw converts USF data to local representation of Dut instance.
+func ConvertAttachedDeviceToTlw(data *ufsAPI.AttachedDeviceData) (dut *tlw.Dut, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = errors.Reason("convert dut: %v\n%s", r, debug.Stack()).Err()
+		}
+	}()
+	machine := data.GetMachine()
+	machineLSE := data.GetLabConfig()
+	if machine == nil || machineLSE == nil {
+		return nil, errors.Reason("convert attached device to tlw: unexpected case!").Err()
+	}
+	// Determine type of device.
+	setup := tlw.DUTSetupTypeUnspecified
+	switch machine.GetAttachedDevice().GetDeviceType() {
+	case ufspb.AttachedDeviceType_ATTACHED_DEVICE_TYPE_ANDROID_PHONE,
+		ufspb.AttachedDeviceType_ATTACHED_DEVICE_TYPE_ANDROID_TABLET:
+		setup = tlw.DUTSetupTypeAndroid
+	case ufspb.AttachedDeviceType_ATTACHED_DEVICE_TYPE_APPLE_PHONE,
+		ufspb.AttachedDeviceType_ATTACHED_DEVICE_TYPE_APPLE_TABLET:
+		setup = tlw.DUTSetupTypeIOS
+	default:
+		setup = tlw.DUTSetupTypeUnspecified
+	}
+	return &tlw.Dut{
+		Id:              machine.GetName(),
+		Name:            machineLSE.GetHostname(),
+		Board:           machine.GetAttachedDevice().GetBuildTarget(),
+		Model:           machine.GetAttachedDevice().GetModel(),
+		SerialNumber:    machine.GetSerialNumber(),
+		SetupType:       setup,
+		State:           dutstate.ConvertFromUFSState(machineLSE.GetResourceState()),
+		ExtraAttributes: map[string][]string{
+			// Attached device does not have pools. Need read from Scheduling unit.
+			// tlw.ExtraAttributePools: pools,
+		},
+		ProvisionedInfo: &tlw.DUTProvisionedInfo{},
+	}, nil
+}
+
 // CreateUpdateDutRequest creates request instance to update UFS.
-func CreateUpdateDutRequest(dutID string, dut *tlw.Dut) (req *ufsAPI.UpdateDutStateRequest, err error) {
+func CreateUpdateDutRequest(dutID string, dut *tlw.Dut) (req *ufsAPI.UpdateDeviceRecoveryDataRequest, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = errors.Reason("update dut specs: %v\n%s", r, debug.Stack()).Err()
 		}
 	}()
-	return &ufsAPI.UpdateDutStateRequest{
-		DutState: getUFSDutComponentStateFromSpecs(dutID, dut),
-		DutMeta:  getUFSDutMetaFromSpecs(dutID, dut),
-		LabMeta:  getUFSLabMetaFromSpecs(dutID, dut),
+	return &ufsAPI.UpdateDeviceRecoveryDataRequest{
+		ChromeosDeviceId: dutID,
+		Hostname:         dut.Name,
+		DutState:         getUFSDutComponentStateFromSpecs(dutID, dut),
+		DutData:          getUFSDutDataFromSpecs(dutID, dut),
+		LabData:          getUFSLabDataFromSpecs(dutID, dut),
+		ResourceState:    dutstate.ConvertToUFSState(dut.State),
 	}, nil
-}
-
-const (
-	// Extra attributes for DUT to provide custom info.
-	ExtraAttributesPools          = "pools"
-	ExtraAttributesServoSetup     = "servo_setup"
-	ExtraAttributesServoSetupDual = "servo_setup_dual"
-)
-
-// GenerateServodParams generates servod command based on device info.
-// Expected output parameters for servod:
-//  "BOARD=${VALUE}" - name of DUT board.
-//  "MODEL=${VALUE}" - name of DUT model.
-//  "PORT=${VALUE}" - port specified to run servod on servo-host.
-//  "SERIAL=${VALUE}" - serial number of root servo.
-//  "CONFIG=cr50.xml" - special parameter, for extra ability of CR50.
-//  "REC_MODE=1" - start servod in recovery-mode, if root device found then servod will start event not all components detected.
-func GenerateServodParams(dut *tlw.Dut, o *tlw.ServodOptions) (cmd []string, err error) {
-	if dut == nil || dut.Name == "" {
-		return nil, errors.Reason("get servod params: device is not provided").Err()
-	}
-	if dut.ServoHost == nil || dut.ServoHost.Servo == nil {
-		return nil, errors.Reason("get servod params for %q: servo is not specified by device", dut.Name).Err()
-	}
-	var parts []string
-	if dut.Board != "" {
-		parts = append(parts, fmt.Sprintf("BOARD=%s", dut.Board))
-		if dut.Model != "" {
-			parts = append(parts, fmt.Sprintf("MODEL=%s", dut.Model))
-		}
-	}
-	parts = append(parts, fmt.Sprintf("PORT=%d", dut.ServoHost.ServodPort))
-
-	if dut.ServoHost.Servo.SerialNumber != "" {
-		parts = append(parts, fmt.Sprintf("SERIAL=%s", dut.ServoHost.Servo.SerialNumber))
-	}
-	if vs, ok := dut.ExtraAttributes[ExtraAttributesServoSetup]; ok {
-		for _, v := range vs {
-			if v == ExtraAttributesServoSetupDual {
-				parts = append(parts, "DUAL_V4=1")
-				break
-			}
-		}
-	}
-	if pools, ok := dut.ExtraAttributes[ExtraAttributesPools]; ok {
-		for _, p := range pools {
-			if strings.Contains(p, "faft-cr50") {
-				parts = append(parts, "CONFIG=cr50.xml")
-				break
-			}
-		}
-	}
-	if o != nil && o.RecoveryMode {
-		parts = append(parts, "REC_MODE=1")
-	}
-	return parts, nil
 }
 
 func adaptUfsDutToTLWDut(data *ufspb.ChromeOSDeviceData) (*tlw.Dut, error) {
@@ -152,7 +137,7 @@ func adaptUfsDutToTLWDut(data *ufspb.ChromeOSDeviceData) (*tlw.Dut, error) {
 		WifiRouterHosts:     createWifiRouterHosts(p.GetWifi()),
 		PeripheralWifiState: convertPeripheralWifiState(ds.GetWifiPeripheralState()),
 		Bluetooth:           createDUTBluetooth(ds, dc),
-		BluetoothPeerHosts:  createBluetoothPeerHosts(dut, ds, name, p),
+		BluetoothPeerHosts:  createBluetoothPeerHosts(p),
 		Battery:             battery,
 		ServoHost:           createServoHost(p, ds),
 		ChameleonHost:       createChameleonHost(name, ds),
@@ -164,7 +149,7 @@ func adaptUfsDutToTLWDut(data *ufspb.ChromeOSDeviceData) (*tlw.Dut, error) {
 		},
 		DeviceSku: machine.GetChromeosMachine().GetSku(),
 		ExtraAttributes: map[string][]string{
-			ExtraAttributesPools: dut.GetPools(),
+			tlw.ExtraAttributePools: dut.GetPools(),
 		},
 		ProvisionedInfo: &tlw.DUTProvisionedInfo{},
 	}
@@ -173,19 +158,14 @@ func adaptUfsDutToTLWDut(data *ufspb.ChromeOSDeviceData) (*tlw.Dut, error) {
 		d.Audio.StaticCable = audio.AudioCable
 	}
 	if p.GetServo().GetServoSetup() == ufslab.ServoSetupType_SERVO_SETUP_DUAL_V4 {
-		d.ExtraAttributes[ExtraAttributesServoSetup] = []string{ExtraAttributesServoSetupDual}
+		d.ExtraAttributes[tlw.ExtraAttributeServoSetup] = []string{tlw.ExtraAttributeServoSetupDual}
 	}
 	return d, nil
 }
 
-func createBluetoothPeerHosts(
-	dut *ufslab.DeviceUnderTest,
-	dutState *ufslab.DutState,
-	labConfigName string,
-	peripherals *ufslab.Peripherals,
-) []*tlw.BluetoothPeerHost {
-	// Generate list of peers we can have with states.
-	// TODO(ashishgandhi@): Switch to using this once we have all BTPs in UFS.
+// createBluetoothPeerHosts use the UFS states for Bluetooth peer devices to create
+// the equivalent tlw slice.
+func createBluetoothPeerHosts(peripherals *ufslab.Peripherals) []*tlw.BluetoothPeerHost {
 	var bluetoothPeerHosts []*tlw.BluetoothPeerHost
 	for _, btp := range peripherals.GetBluetoothPeers() {
 		var (
@@ -197,7 +177,10 @@ func createBluetoothPeerHosts(
 			hostname = d.RaspberryPi.GetHostname()
 			state = convertBluetoothPeerState(d.RaspberryPi.GetState())
 		default:
-			logging.Warningf(context.TODO(), "Unknown device type: %v", d)
+			// We never want this to fail. It does create a risk
+			// for silent errors however. Introduction of new device
+			// types is very infrequent and also a very conscious
+			// event, which helps counterweight that risk.
 			continue
 		}
 		bluetoothPeerHosts = append(bluetoothPeerHosts, &tlw.BluetoothPeerHost{
@@ -205,25 +188,6 @@ func createBluetoothPeerHosts(
 			State: state,
 		})
 	}
-	logging.Infof(context.TODO(), "Bluetooth peers found via UFS for DUT %q: %v", dut.GetHostname(), bluetoothPeerHosts)
-
-	// Resetting slice to continue populating with the old system.
-	bluetoothPeerHosts = bluetoothPeerHosts[:0]
-	goodPeerCount := dutState.GetWorkingBluetoothBtpeer()
-	for i := 1; i <= 4; i++ {
-		state := tlw.BluetoothPeerStateUnspecified
-		if i <= int(goodPeerCount) {
-			// As e do not have data which peer is good we set state for
-			// the first peers. Later when peripherals will be supported by UFS
-			// we can reeive proper information.
-			state = tlw.BluetoothPeerStateWorking
-		}
-		bluetoothPeerHosts = append(bluetoothPeerHosts, &tlw.BluetoothPeerHost{
-			Name:  fmt.Sprintf("%s-btpeer%d", labConfigName, i),
-			State: state,
-		})
-	}
-	logging.Infof(context.TODO(), "Bluetooth peers populated based on counts for DUT %q: %v", dut.GetHostname(), bluetoothPeerHosts)
 
 	return bluetoothPeerHosts
 }
@@ -252,7 +216,7 @@ func adaptUfsLabstationToTLWDut(data *ufspb.ChromeOSDeviceData) (*tlw.Dut, error
 		Cr50KeyEnv:      convertCr50KeyEnv(ds.GetCr50KeyEnv()),
 		DeviceSku:       machine.GetChromeosMachine().GetSku(),
 		ExtraAttributes: map[string][]string{
-			"pool": l.GetPools(),
+			tlw.ExtraAttributePools: l.GetPools(),
 		},
 		ProvisionedInfo: &tlw.DUTProvisionedInfo{},
 	}
@@ -355,33 +319,37 @@ func configHasFeature(dc *ufsdevice.Config, hf ufsdevice.Config_HardwareFeature)
 	return false
 }
 
-func getUFSDutMetaFromSpecs(dutID string, dut *tlw.Dut) *ufspb.DutMeta {
-	dutMeta := &ufspb.DutMeta{
-		ChromeosDeviceId: dutID,
-		Hostname:         dut.Name,
-	}
-	if dut.SerialNumber != "" {
-		dutMeta.SerialNumber = dut.SerialNumber
-	}
-	if dut.Hwid != "" {
-		dutMeta.HwID = dut.Hwid
-	}
+func getUFSDutDataFromSpecs(dutID string, dut *tlw.Dut) *ufsAPI.UpdateDeviceRecoveryDataRequest_DutData {
+	dutData := &ufsAPI.UpdateDeviceRecoveryDataRequest_DutData{}
+	dutData.SerialNumber = dut.SerialNumber
+	dutData.HwID = dut.Hwid
 	// TODO: update logic if required by b/184391605
-	dutMeta.DeviceSku = dut.DeviceSku
-	return dutMeta
+	dutData.DeviceSku = dut.DeviceSku
+	return dutData
 }
 
-func getUFSLabMetaFromSpecs(dutID string, dut *tlw.Dut) (labconfig *ufspb.LabMeta) {
-	labMeta := &ufspb.LabMeta{
-		ChromeosDeviceId: dutID,
-		Hostname:         dut.Name,
+func getUFSLabDataFromSpecs(dutID string, dut *tlw.Dut) *ufsAPI.UpdateDeviceRecoveryDataRequest_LabData {
+	labData := &ufsAPI.UpdateDeviceRecoveryDataRequest_LabData{
+		WifiRouters: []*ufsAPI.UpdateDeviceRecoveryDataRequest_WifiRouter{},
 	}
 	if sh := dut.ServoHost; sh != nil {
-		labMeta.ServoType = sh.Servo.Type
-		labMeta.SmartUsbhub = sh.SmartUsbhubPresent
-		labMeta.ServoTopology = convertServoTopologyToUFS(sh.ServoTopology)
+		labData.ServoType = sh.Servo.Type
+		labData.SmartUsbhub = sh.SmartUsbhubPresent
+		labData.ServoTopology = convertServoTopologyToUFS(sh.ServoTopology)
 	}
-	return labMeta
+	for _, router := range dut.WifiRouterHosts {
+		labData.WifiRouters = append(labData.WifiRouters, &ufsAPI.UpdateDeviceRecoveryDataRequest_WifiRouter{
+			Hostname: router.GetName(),
+			State:    convertWifiRouterStateToUFS(router.GetState()),
+		})
+	}
+	for _, btp := range dut.BluetoothPeerHosts {
+		labData.BlueoothPeers = append(labData.BlueoothPeers, &ufsAPI.UpdateDeviceRecoveryDataRequest_BluetoothPeer{
+			Hostname: btp.Name,
+			State:    convertBluetoothPeerStateToUFS(btp.State),
+		})
+	}
+	return labData
 }
 
 // getUFSDutComponentStateFromSpecs collects all states for DUT and peripherals.
@@ -457,5 +425,6 @@ func getUFSDutComponentStateFromSpecs(dutID string, dut *tlw.Dut) *ufslab.DutSta
 	} else {
 		state.AudioLoopbackDongle = ufslab.PeripheralState_UNKNOWN
 	}
+	state.WifiPeripheralState = convertPeripheralWifiStateToUFS(dut.PeripheralWifiState)
 	return state
 }

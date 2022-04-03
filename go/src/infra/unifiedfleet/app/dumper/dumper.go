@@ -25,48 +25,48 @@ import (
 var Jobs = []*cron.CronTab{
 	{
 		// Dump configs, registrations, inventory and states to BQ
-		Name:     "ufs.dumper",
+		Name:     util.CronJobNames["mainBQCron"],
 		Time:     20 * time.Minute,
 		TrigType: cron.DAILY,
 		Job:      dump,
 	},
 	{
 		// Dump change events to BQ
-		Name:     "ufs.change_event.BqDump",
+		Name:     util.CronJobNames["changeEventToBQCron"],
 		Time:     10 * time.Minute,
 		TrigType: cron.EVERY,
 		Job:      dumpChangeEvent,
 	},
 	{
 		// Dump snapshots to BQ
-		Name:     "ufs.snapshot_msg.BqDump",
+		Name:     util.CronJobNames["snapshotToBQCron"],
 		Time:     10 * time.Minute,
 		TrigType: cron.EVERY,
 		Job:      dumpChangeSnapshots,
 	},
 	{
 		// Dump network configs to BQ
-		Name:     "ufs.cros_network.dump",
+		Name:     util.CronJobNames["networkConfigToBQCron"],
 		Time:     60 * time.Minute,
 		TrigType: cron.EVERY,
 		Job:      dumpCrosNetwork,
 	},
 	{
 		// Sync asset info from HaRT
-		Name:     "ufs.sync_devices.sync",
+		Name:     util.CronJobNames["hartSyncCron"],
 		TrigType: cron.HOURLY,
 		Job:      SyncAssetInfoFromHaRT,
 	},
 	{
 		// Push changes to dron queen
-		Name:     "ufs.push_to_drone_queen",
+		Name:     util.CronJobNames["droneQueenSyncCron"],
 		Time:     10 * time.Minute,
 		TrigType: cron.EVERY,
 		Job:      pushToDroneQueen,
 	},
 	{
 		// Report UFS metrics
-		Name:     "ufs.report_inventory",
+		Name:     util.CronJobNames["InventoryMetricsReportCron"],
 		Time:     5 * time.Minute,
 		TrigType: cron.EVERY,
 		Job:      reportUFSInventoryCronHandler,
@@ -97,13 +97,10 @@ func TriggerJob(name string) error {
 
 func dump(ctx context.Context) error {
 	ctx = logging.SetLevel(ctx, logging.Info)
-	// Execute importing before dumping
-	err1 := importCrimson(ctx)
-	err2 := exportToBQ(ctx, dumpToBQ)
-	if err1 == nil && err2 == nil {
-		return nil
+	if err := exportToBQ(ctx, dumpToBQ); err != nil {
+		return err
 	}
-	return errors.NewMultiError(err1, err2)
+	return nil
 }
 
 func dumpToBQ(ctx context.Context, bqClient *bigquery.Client) (err error) {
@@ -187,26 +184,25 @@ func getProject(ctx context.Context) string {
 	return ctx.Value(projectKey).(string)
 }
 
-func exportToBQ(ctx context.Context, f func(ctx context.Context, bqClient *bigquery.Client) error) (err error) {
+func exportToBQ(ctx context.Context, f func(ctx context.Context, bqClient *bigquery.Client) error) error {
+	var mErr error
 	for _, ns := range util.ClientToDatastoreNamespace {
-		newCtx, err1 := util.SetupDatastoreNamespace(ctx, ns)
+		newCtx, err := util.SetupDatastoreNamespace(ctx, ns)
 		if ns == "" {
 			// This is only for printing error message for default namespace.
-			ns = "default"
+			ns = "default (chrome)"
 		}
-		logging.Debugf(newCtx, "Exporting to BQ for namespace %q", ns)
-		if err1 != nil {
-			err1 = errors.Annotate(err, "Setting namespace %q failed. BQ export skipped for the namespace %q", ns, ns).Err()
-			logging.Errorf(ctx, err.Error())
-			err = errors.NewMultiError(err, err1)
+		logging.Infof(newCtx, "Exporting to BQ for namespace %q", ns)
+		if err != nil {
+			logging.Errorf(ctx, "Setting namespace %q failed, BQ export skipped: %s", ns, err.Error())
+			mErr = errors.NewMultiError(mErr, err)
 			continue
 		}
-		err1 = f(newCtx, get(newCtx))
-		if err1 != nil {
-			err1 = errors.Annotate(err, "BQ export failed for the namespace %q", ns).Err()
-			logging.Errorf(ctx, err.Error())
-			err = errors.NewMultiError(err, err1)
+		err = f(newCtx, get(newCtx))
+		if err != nil {
+			logging.Errorf(ctx, "BQ export failed for the namespace %q: %s", ns, err.Error())
+			mErr = errors.NewMultiError(mErr, err)
 		}
 	}
-	return err
+	return mErr
 }

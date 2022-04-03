@@ -51,6 +51,7 @@ func Run(ctx context.Context, args *RunArgs) (rErr error) {
 	if err != nil {
 		return errors.Annotate(err, "run recovery %q", args.UnitName).Err()
 	}
+	log.Infof(ctx, "Unit %q contains resources: %v", args.UnitName, resources)
 	if args.Metrics == nil {
 		log.Debugf(ctx, "run: metrics is nil")
 	} else { // Guard against incorrectly setting up Karte client. See b:217746479 for details.
@@ -169,9 +170,9 @@ func retrieveResources(ctx context.Context, args *RunArgs) (resources []string, 
 		step, ctx = build.StartStep(ctx, fmt.Sprintf("Retrieve resources for %s", args.UnitName))
 		defer func() { step.End(err) }()
 	}
-	if args.Logger != nil {
-		args.Logger.IndentLogging()
-		defer func() { args.Logger.DedentLogging() }()
+	if i, ok := args.Logger.(logger.LogIndenter); ok {
+		i.Indent()
+		defer func() { i.Dedent() }()
 	}
 	resources, err = args.Access.ListResourcesForUnit(ctx, args.UnitName)
 	return resources, errors.Annotate(err, "retrieve resources").Err()
@@ -185,9 +186,9 @@ func loadConfiguration(ctx context.Context, dut *tlw.Dut, args *RunArgs) (rc *co
 		step, ctx = build.StartStep(ctx, "Load configuration")
 		defer func() { step.End(err) }()
 	}
-	if args.Logger != nil {
-		args.Logger.IndentLogging()
-		defer func() { args.Logger.DedentLogging() }()
+	if i, ok := args.Logger.(logger.LogIndenter); ok {
+		i.Indent()
+		defer func() { i.Dedent() }()
 	}
 	cr := args.ConfigReader
 	if cr == nil {
@@ -243,6 +244,8 @@ func defaultConfiguration(tn tasknames.TaskName, ds tlw.DUTSetupType) (*config.C
 			return config.CrosRepairConfig(), nil
 		case tlw.DUTSetupTypeLabstation:
 			return config.LabstationRepairConfig(), nil
+		case tlw.DUTSetupTypeAndroid:
+			return config.AndroidRepairConfig(), nil
 		default:
 			return nil, errors.Reason("Setup type: %q is not supported for task: %q!", ds, tn).Err()
 		}
@@ -252,6 +255,8 @@ func defaultConfiguration(tn tasknames.TaskName, ds tlw.DUTSetupType) (*config.C
 			return config.CrosDeployConfig(), nil
 		case tlw.DUTSetupTypeLabstation:
 			return config.LabstationDeployConfig(), nil
+		case tlw.DUTSetupTypeAndroid:
+			return config.AndroidDeployConfig(), nil
 		default:
 			return nil, errors.Reason("Setup type: %q is not supported for task: %q!", ds, tn).Err()
 		}
@@ -268,9 +273,9 @@ func readInventory(ctx context.Context, resource string, args *RunArgs) (dut *tl
 		step, _ := build.StartStep(ctx, "Read inventory")
 		defer func() { step.End(err) }()
 	}
-	if args.Logger != nil {
-		args.Logger.IndentLogging()
-		defer func() { args.Logger.DedentLogging() }()
+	if i, ok := args.Logger.(logger.LogIndenter); ok {
+		i.Indent()
+		defer func() { i.Dedent() }()
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -294,9 +299,9 @@ func updateInventory(ctx context.Context, dut *tlw.Dut, args *RunArgs) (rErr err
 		step, _ := build.StartStep(ctx, "Update inventory")
 		defer func() { step.End(rErr) }()
 	}
-	if args.Logger != nil {
-		args.Logger.IndentLogging()
-		defer func() { args.Logger.DedentLogging() }()
+	if i, ok := args.Logger.(logger.LogIndenter); ok {
+		i.Indent()
+		defer func() { i.Dedent() }()
 	}
 	logDUTInfo(ctx, dut.Name, dut, "updated DUT info")
 	if args.EnableUpdateInventory {
@@ -323,9 +328,9 @@ func logDUTInfo(ctx context.Context, resource string, dut *tlw.Dut, msg string) 
 
 // runDUTPlans executes single DUT against task's plans.
 func runDUTPlans(ctx context.Context, dut *tlw.Dut, c *config.Configuration, args *RunArgs) error {
-	if args.Logger != nil {
-		args.Logger.IndentLogging()
-		defer args.Logger.DedentLogging()
+	if i, ok := args.Logger.(logger.LogIndenter); ok {
+		i.Indent()
+		defer func() { i.Dedent() }()
 	}
 	log.Infof(ctx, "Run DUT %q: starting...", dut.Name)
 	planNames := c.GetPlanNames()
@@ -400,7 +405,9 @@ func runDUTPlans(ctx context.Context, dut *tlw.Dut, c *config.Configuration, arg
 
 // runSinglePlan run single plan for all resources associated with plan.
 func runSinglePlan(ctx context.Context, planName string, plan *config.Plan, execArgs *execs.RunArgs) error {
+	log.Infof(ctx, "------====================-----")
 	log.Infof(ctx, "Run plan %q: starting...", planName)
+	log.Infof(ctx, "------====================-----")
 	resources := collectResourcesForPlan(planName, execArgs.DUT)
 	if len(resources) == 0 {
 		log.Infof(ctx, "Run plan %q: no resources found.", planName)
@@ -427,9 +434,9 @@ func runDUTPlanPerResource(ctx context.Context, resource, planName string, plan 
 		step, ctx = build.StartStep(ctx, fmt.Sprintf("Run plan %q for %q", planName, resource))
 		defer func() { step.End(rErr) }()
 	}
-	if execArgs.Logger != nil {
-		execArgs.Logger.IndentLogging()
-		defer func() { execArgs.Logger.DedentLogging() }()
+	if i, ok := execArgs.Logger.(logger.LogIndenter); ok {
+		i.Indent()
+		defer func() { i.Dedent() }()
 	}
 	execArgs.ResourceName = resource
 	if err := engine.Run(ctx, planName, plan, execArgs); err != nil {
@@ -444,7 +451,7 @@ func runDUTPlanPerResource(ctx context.Context, resource, planName string, plan 
 // resources and then we will run the same plan for each resource.
 func collectResourcesForPlan(planName string, dut *tlw.Dut) []string {
 	switch planName {
-	case config.PlanCrOS, config.PlanClosing:
+	case config.PlanCrOS, config.PlanAndroid, config.PlanClosing:
 		if dut.Name != "" {
 			return []string{dut.Name}
 		}

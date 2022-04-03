@@ -19,7 +19,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	fleet "infra/appengine/crosskylabadmin/api/fleet/v1"
-	"infra/cros/dutstate"
 	"infra/cros/recovery/docker"
 	"infra/cros/recovery/internal/localtlw/dutinfo"
 	tlwio "infra/cros/recovery/internal/localtlw/io"
@@ -32,10 +31,7 @@ import (
 	"infra/cros/recovery/internal/rpm"
 	"infra/cros/recovery/tlw"
 	"infra/libs/sshpool"
-	ufspb "infra/unifiedfleet/api/v1/models"
-	ufslab "infra/unifiedfleet/api/v1/models/chromeos/lab"
 	ufsAPI "infra/unifiedfleet/api/v1/rpc"
-	ufsUtil "infra/unifiedfleet/app/util"
 )
 
 const (
@@ -50,14 +46,10 @@ const (
 
 // UFSClient is a client that knows how to work with UFS RPC methods.
 type UFSClient interface {
-	// GetSchedulingUnit retrieves the details of the SchedulingUnit.
-	GetSchedulingUnit(ctx context.Context, req *ufsAPI.GetSchedulingUnitRequest, opts ...grpc.CallOption) (rsp *ufspb.SchedulingUnit, err error)
-	// GetChromeOSDeviceData retrieves requested Chrome OS device data from the UFS and inventoryV2.
-	GetChromeOSDeviceData(ctx context.Context, req *ufsAPI.GetChromeOSDeviceDataRequest, opts ...grpc.CallOption) (rsp *ufspb.ChromeOSDeviceData, err error)
+	// GetDeviceData retrieves requested device data from the UFS and inventoryV2.
+	GetDeviceData(ctx context.Context, req *ufsAPI.GetDeviceDataRequest, opts ...grpc.CallOption) (rsp *ufsAPI.GetDeviceDataResponse, err error)
 	// UpdateDeviceRecoveryData updates the labdata, dutdata, resource state, dut states for a DUT
 	UpdateDeviceRecoveryData(ctx context.Context, in *ufsAPI.UpdateDeviceRecoveryDataRequest, opts ...grpc.CallOption) (*ufsAPI.UpdateDeviceRecoveryDataResponse, error)
-	// UpdateDutState updates the state config for a DUT
-	UpdateDutState(ctx context.Context, in *ufsAPI.UpdateDutStateRequest, opts ...grpc.CallOption) (*ufslab.DutState, error)
 }
 
 // CSAClient is a client that knows how to respond to the GetStableVersion RPC call.
@@ -261,14 +253,14 @@ func (c *tlwClient) InitServod(ctx context.Context, req *tlw.InitServodRequest) 
 		return errors.Reason("init servod %q: servo is not found", req.Resource).Err()
 	}
 	if isServodContainer(dut) {
-		err := c.startServodContainer(ctx, dut)
+		err := c.startServodContainer(ctx, dut, req.Options)
 		return errors.Annotate(err, "init servod %q", req.Resource).Err()
 	}
 	s, err := c.servodPool.Get(
 		localproxy.BuildAddr(dut.ServoHost.Name),
 		int32(dut.ServoHost.ServodPort),
 		func() ([]string, error) {
-			return dutinfo.GenerateServodParams(dut, req.Options)
+			return servod.GenerateParams(req.Options), nil
 		})
 	if err != nil {
 		return errors.Annotate(err, "init servod %q", req.Resource).Err()
@@ -299,7 +291,7 @@ func createServodContainerArgs(detached bool, envVar, cmd []string) *docker.Cont
 }
 
 // startServodContainer start servod container if required.
-func (c *tlwClient) startServodContainer(ctx context.Context, dut *tlw.Dut) error {
+func (c *tlwClient) startServodContainer(ctx context.Context, dut *tlw.Dut, o *tlw.ServodOptions) error {
 	containerName := servoContainerName(dut)
 	d, err := c.dockerClient(ctx)
 	if err != nil {
@@ -311,34 +303,7 @@ func (c *tlwClient) startServodContainer(ctx context.Context, dut *tlw.Dut) erro
 		log.Debugf(ctx, "Servod container %s is already up!", containerName)
 		return nil
 	}
-	// TODO: Receive timeout from request.
-	sp := fmt.Sprintf("%d", dut.ServoHost.ServodPort)
-	// TODO(otabek): move servod param preparation to separate method.
-	envVar := []string{
-		fmt.Sprintf("PORT=%s", sp),
-		fmt.Sprintf("BOARD=%s", dut.Board),
-		fmt.Sprintf("MODEL=%s", dut.Model),
-		"REC_MODE=1",
-	}
-	if sn := dut.ServoHost.Servo.SerialNumber; sn != "" {
-		envVar = append(envVar, fmt.Sprintf("SERIAL=%s", sn))
-	}
-	if vs, ok := dut.ExtraAttributes[dutinfo.ExtraAttributesServoSetup]; ok {
-		for _, v := range vs {
-			if v == dutinfo.ExtraAttributesServoSetupDual {
-				envVar = append(envVar, "DUAL_V4=1")
-				break
-			}
-		}
-	}
-	if pools, ok := dut.ExtraAttributes[dutinfo.ExtraAttributesPools]; ok {
-		for _, p := range pools {
-			if strings.Contains(p, "faft-cr50") {
-				envVar = append(envVar, "CONFIG=cr50.xml")
-				break
-			}
-		}
-	}
+	envVar := servod.GenerateParams(o)
 	containerArgs := createServodContainerArgs(true, envVar, []string{"bash", "/start_servod.sh"})
 	res, err := d.Start(ctx, containerName, containerArgs, time.Hour)
 	if err != nil {
@@ -352,7 +317,7 @@ func (c *tlwClient) startServodContainer(ctx context.Context, dut *tlw.Dut) erro
 	// Waiting to finish servod initialization.
 	eReq := &docker.ExecRequest{
 		Timeout: 2 * time.Minute,
-		Cmd:     []string{"servodtool", "instance", "wait-for-active", "-p", sp},
+		Cmd:     []string{"servodtool", "instance", "wait-for-active", "-p", fmt.Sprintf("%d", o.ServodPort)},
 	}
 	if _, err := d.Exec(ctx, containerName, eReq); err != nil {
 		return errors.Annotate(err, "start servod container").Err()
@@ -388,11 +353,15 @@ func (c *tlwClient) StopServod(ctx context.Context, resourceName string) error {
 			return errors.Annotate(err, "stop servod %q", resourceName).Err()
 		}
 	}
+	// TODO: Move options to stop request.
+	o := &tlw.ServodOptions{
+		ServodPort: int32(dut.ServoHost.ServodPort),
+	}
 	s, err := c.servodPool.Get(
 		localproxy.BuildAddr(dut.ServoHost.Name),
-		int32(dut.ServoHost.ServodPort),
+		o.ServodPort,
 		func() ([]string, error) {
-			return dutinfo.GenerateServodParams(dut, nil)
+			return servod.GenerateParams(o), nil
 		})
 	if err != nil {
 		return errors.Annotate(err, "stop servod %q", resourceName).Err()
@@ -447,10 +416,7 @@ func (c *tlwClient) CallServod(ctx context.Context, req *tlw.CallServodRequest) 
 		// For labstation using port forward by ssh.
 		s, err := c.servodPool.Get(
 			localproxy.BuildAddr(dut.ServoHost.Name),
-			int32(dut.ServoHost.ServodPort),
-			func() ([]string, error) {
-				return dutinfo.GenerateServodParams(dut, req.Options)
-			})
+			int32(dut.ServoHost.ServodPort), nil)
 		if err != nil {
 			return fail(err)
 		}
@@ -627,42 +593,8 @@ func (c *tlwClient) ListResourcesForUnit(ctx context.Context, name string) ([]st
 	if name == "" {
 		return nil, errors.Reason("list resources: unit name is expected").Err()
 	}
-	dd, err := c.ufsClient.GetChromeOSDeviceData(ctx, &ufsAPI.GetChromeOSDeviceDataRequest{
-		Hostname: name,
-	})
-	if err != nil {
-		if status.Code(err) == codes.NotFound {
-			log.Debugf(ctx, "List resources %q: record not found.", name)
-		} else {
-			return nil, errors.Reason("list resources %q", name).Err()
-		}
-	} else if dd.GetLabConfig() == nil {
-		return nil, errors.Reason("list resources %q: device data is empty", name).Err()
-	} else {
-		log.Debugf(ctx, "List resources %q: cached received device.", name)
-		dut, err := dutinfo.ConvertDut(dd)
-		if err != nil {
-			return nil, errors.Annotate(err, "list resources %q", name).Err()
-		}
-		c.cacheDevice(dut)
-		return []string{dut.Name}, nil
-	}
-	suName := ufsUtil.AddPrefix(ufsUtil.SchedulingUnitCollection, name)
-	log.Debugf(ctx, "list resources %q: trying to find scheduling unit by name %q.", name, suName)
-	su, err := c.ufsClient.GetSchedulingUnit(ctx, &ufsAPI.GetSchedulingUnitRequest{
-		Name: suName,
-	})
-	if err != nil {
-		if status.Code(err) == codes.NotFound {
-			return nil, errors.Annotate(err, "list resources %q: record not found", name).Err()
-		}
-		return nil, errors.Annotate(err, "list resources %q", name).Err()
-	}
-	var resourceNames []string
-	for _, hostname := range su.GetMachineLSEs() {
-		resourceNames = append(resourceNames, hostname)
-	}
-	return resourceNames, nil
+	resourceNames, err := c.readInventory(ctx, name)
+	return resourceNames, errors.Annotate(err, "list resources %q", name).Err()
 }
 
 // GetDut provides DUT info per requested resource name from inventory.
@@ -717,27 +649,58 @@ func (c *tlwClient) getDevice(ctx context.Context, name string) (*tlw.Dut, error
 		// the device was previously
 		name = dutName
 	}
+	// First check if device is already in the cache.
 	if d, ok := c.devices[name]; ok {
 		log.Debugf(ctx, "Get device %q: received from cache.", name)
 		return d, nil
 	}
-	req := &ufsAPI.GetChromeOSDeviceDataRequest{Hostname: name}
-	dd, err := c.ufsClient.GetChromeOSDeviceData(ctx, req)
+	// Ask to read inventory and then get device from the cache.
+	// If it is still not in the cache then device is unit, not a DUT
+	if _, err := c.readInventory(ctx, name); err != nil {
+		return nil, errors.Annotate(err, "get device").Err()
+	}
+	if d, ok := c.devices[name]; ok {
+		log.Debugf(ctx, "Get device %q: received from cache.", name)
+		return d, nil
+	}
+	return nil, errors.Reason("get device: unexpected error").Err()
+}
+
+// Read inventory and return resource names.
+// As additional received devices will be cached.
+// Please try to check cache before call the method.
+func (c *tlwClient) readInventory(ctx context.Context, name string) (resourceNames []string, rErr error) {
+	ddrsp, err := c.ufsClient.GetDeviceData(ctx, &ufsAPI.GetDeviceDataRequest{Hostname: name})
 	if err != nil {
-		if status.Code(err) == codes.NotFound {
-			return nil, errors.Reason("get device %q: record not found", name).Err()
+		return resourceNames, errors.Annotate(err, "read inventory %q", name).Err()
+	}
+	var dut *tlw.Dut
+	switch ddrsp.GetResourceType() {
+	case ufsAPI.GetDeviceDataResponse_RESOURCE_TYPE_ATTACHED_DEVICE:
+		attachedDevice := ddrsp.GetAttachedDeviceData()
+		dut, err = dutinfo.ConvertAttachedDeviceToTlw(attachedDevice)
+		if err != nil {
+			return resourceNames, errors.Annotate(err, "read inventory %q: attached device", name).Err()
 		}
-		return nil, errors.Annotate(err, "get device %q", name).Err()
-	} else if dd.GetLabConfig() == nil {
-		return nil, errors.Reason("get device %q: received empty data", name).Err()
+		c.cacheDevice(dut)
+		resourceNames = []string{dut.Name}
+	case ufsAPI.GetDeviceDataResponse_RESOURCE_TYPE_CHROMEOS_DEVICE:
+		dd := ddrsp.GetChromeOsDeviceData()
+		dut, err = dutinfo.ConvertDut(dd)
+		if err != nil {
+			return resourceNames, errors.Annotate(err, "get device %q: chromeos device", name).Err()
+		}
+		c.cacheDevice(dut)
+		resourceNames = []string{dut.Name}
+	case ufsAPI.GetDeviceDataResponse_RESOURCE_TYPE_SCHEDULING_UNIT:
+		su := ddrsp.GetSchedulingUnit()
+		for _, hostname := range su.GetMachineLSEs() {
+			resourceNames = append(resourceNames, hostname)
+		}
+	default:
+		return resourceNames, errors.Reason("get device %q: unsupported type %q", name, ddrsp.GetResourceType()).Err()
 	}
-	dut, err := dutinfo.ConvertDut(dd)
-	if err != nil {
-		return nil, errors.Annotate(err, "get device %q", name).Err()
-	}
-	c.cacheDevice(dut)
-	log.Debugf(ctx, "Get device %q: cached received device.", name)
-	return dut, nil
+	return resourceNames, nil
 }
 
 // cacheDevice puts device to local cache and set list host name knows for DUT.
@@ -842,21 +805,15 @@ func (c *tlwClient) UpdateDut(ctx context.Context, dut *tlw.Dut) error {
 		return errors.Annotate(err, "update DUT %q", dut.Name).Err()
 	}
 	log.Debugf(ctx, "Update DUT: update request: %s", req)
-	if _, err := c.ufsClient.UpdateDutState(ctx, req); err != nil {
+	rsp, err := c.ufsClient.UpdateDeviceRecoveryData(ctx, req)
+	if err != nil {
 		return errors.Annotate(err, "update DUT %q", dut.Name).Err()
 	}
+	log.Debugf(ctx, "Update DUT: update response: %s", rsp)
 	c.unCacheDevice(dut)
-	if ufs, ok := c.ufsClient.(dutstate.UFSClient); ok {
-		if err := dutstate.Update(ctx, ufs, dut.Name, dut.State); err != nil {
-			return errors.Annotate(err, "update DUT %q", dut.Name).Err()
-		}
-	} else {
-		return errors.Reason("update DUT %q: dutstate.UFSClient interface is not implemented by client", dut.Name).Err()
-	}
-	if err := localinfo.UpdateProvisionInfo(ctx, dut); err != nil {
-		return errors.Annotate(err, "update dut").Err()
-	}
-	return nil
+	// Update provisioning data on the execution env.
+	err = localinfo.UpdateProvisionInfo(ctx, dut)
+	return errors.Annotate(err, "udpate dut").Err()
 }
 
 // Provision triggers provisioning of the device.
