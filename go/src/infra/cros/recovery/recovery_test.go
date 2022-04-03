@@ -27,25 +27,25 @@ var dutPlansCases = []struct {
 }{
 	{
 		"default no task",
-		tlw.DUTSetupTypeDefault,
+		tlw.DUTSetupTypeUnspecified,
 		tasknames.TaskName(""),
 		nil,
 	},
 	{
 		"default recovery",
-		tlw.DUTSetupTypeDefault,
+		tlw.DUTSetupTypeUnspecified,
 		tasknames.Recovery,
 		nil,
 	},
 	{
 		"default deploy",
-		tlw.DUTSetupTypeDefault,
+		tlw.DUTSetupTypeUnspecified,
 		tasknames.Deploy,
 		nil,
 	},
 	{
 		"default custom",
-		tlw.DUTSetupTypeDefault,
+		tlw.DUTSetupTypeUnspecified,
 		tasknames.Custom,
 		nil,
 	},
@@ -95,6 +95,36 @@ var dutPlansCases = []struct {
 		"labstation custom",
 		tlw.DUTSetupTypeLabstation,
 		tasknames.Custom,
+		nil,
+	},
+	{
+		"android no task",
+		tlw.DUTSetupTypeAndroid,
+		tasknames.TaskName(""),
+		nil,
+	},
+	{
+		"android recovery",
+		tlw.DUTSetupTypeAndroid,
+		tasknames.Recovery,
+		[]string{"android"},
+	},
+	{
+		"android deploy",
+		tlw.DUTSetupTypeAndroid,
+		tasknames.Deploy,
+		[]string{"android"},
+	},
+	{
+		"android custom",
+		tlw.DUTSetupTypeAndroid,
+		tasknames.Custom,
+		nil,
+	},
+	{
+		"android no task",
+		tlw.DUTSetupTypeAndroid,
+		tasknames.TaskName(""),
 		nil,
 	},
 }

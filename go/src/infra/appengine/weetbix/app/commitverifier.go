@@ -13,6 +13,7 @@ import (
 	"sort"
 
 	"go.chromium.org/luci/common/errors"
+	"go.chromium.org/luci/common/logging"
 	"go.chromium.org/luci/common/tsmon/field"
 	"go.chromium.org/luci/common/tsmon/metric"
 	cvv0 "go.chromium.org/luci/cv/api/v0"
@@ -110,20 +111,7 @@ func cvPubSubHandlerImpl(ctx context.Context, request *http.Request) (project st
 		owner = "automation"
 	}
 
-	pr := &ctlpb.PresubmitResult{
-		PresubmitRunId: &pb.PresubmitRunId{
-			System: "luci-cv",
-			Id:     fmt.Sprintf("%s/%s", project, runID),
-		},
-		PresubmitRunSucceeded: run.Status == cvv0.Run_SUCCEEDED,
-		Mode:                  run.GetMode(),
-		Owner:                 owner,
-		Cls:                   extractRunChangelists(run.Cls),
-		CreationTime:          run.CreateTime,
-	}
-
-	// Schedule ResultIngestion tasks for each build.
-	var buildIDs []string
+	presubmitResultByBuildID := make(map[string]*ctlpb.PresubmitResult)
 	for _, tj := range run.Tryjobs {
 		b := tj.GetResult().GetBuildbucket()
 		if b == nil {
@@ -131,10 +119,39 @@ func cvPubSubHandlerImpl(ctx context.Context, request *http.Request) (project st
 			continue
 		}
 
-		buildIDs = append(buildIDs, buildID(bbHost, b.Id))
+		if tj.Reuse {
+			// Do not ingest re-used tryjobs.
+			// Builds should be ingested with the CV run that initiated
+			// them, not a CV run that re-used them.
+			// Tryjobs can also be marked re-used if they were user
+			// initiated through gerrit. In this case, the build would
+			// not have been tagged as being part of a CV run (e.g.
+			// through user_agent: cq), so it will not expect to be
+			// joined to a CV run.
+			continue
+		}
+
+		buildID := buildID(bbHost, b.Id)
+		if _, ok := presubmitResultByBuildID[buildID]; ok {
+			logging.Warningf(ctx, "CV Run %s has build %s as tryjob multiple times, ignoring the second occurances", psRun.Id, buildID)
+			continue
+		}
+
+		presubmitResultByBuildID[buildID] = &ctlpb.PresubmitResult{
+			PresubmitRunId: &pb.PresubmitRunId{
+				System: "luci-cv",
+				Id:     fmt.Sprintf("%s/%s", project, runID),
+			},
+			PresubmitRunSucceeded: run.Status == cvv0.Run_SUCCEEDED,
+			Mode:                  run.GetMode(),
+			Owner:                 owner,
+			Cls:                   extractRunChangelists(run.Cls),
+			CreationTime:          run.CreateTime,
+			Critical:              tj.Critical,
+		}
 	}
 
-	if err := JoinPresubmitResult(ctx, buildIDs, project, pr); err != nil {
+	if err := JoinPresubmitResult(ctx, presubmitResultByBuildID, project); err != nil {
 		return project, true, errors.Annotate(err, "joining presubmit results").Err()
 	}
 

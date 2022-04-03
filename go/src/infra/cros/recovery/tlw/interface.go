@@ -107,12 +107,6 @@ const (
 	ServodMethodHwInit ServodMethod = "hwinit"
 )
 
-// ServodOption represents options to start servod.
-type ServodOptions struct {
-	// Use recovery mode when start servod
-	RecoveryMode bool
-}
-
 // InitServodRequest represents data to initiate servod daemon on servo-host.
 type InitServodRequest struct {
 	Resource string
@@ -124,7 +118,6 @@ type CallServodRequest struct {
 	Resource string
 	Method   ServodMethod
 	Args     []*xmlrpc.Value
-	Options  *ServodOptions
 	Timeout  time.Duration
 }
 
@@ -138,13 +131,17 @@ type CallServodResponse struct {
 type DUTSetupType string
 
 const (
-	DUTSetupTypeDefault DUTSetupType = "DEFAULT"
+	DUTSetupTypeUnspecified DUTSetupType = "UNSPECIFIED"
 	// Special setup of servo-host represented as labstation.
 	DUTSetupTypeLabstation DUTSetupType = "LABSTATION"
 	// Special setup for routers.
 	DUTSetupTypeJetstream DUTSetupType = "JETSTREAM"
 	// Special setup for ChromeOS devices.
 	DUTSetupTypeCros DUTSetupType = "CROS"
+	// Special setup for Android devices.
+	DUTSetupTypeAndroid DUTSetupType = "ANDROID"
+	// Special setup for IOS devices.
+	DUTSetupTypeIOS DUTSetupType = "IOS"
 )
 
 // PowerSupplyType describes different power supply types for a DUT.
@@ -176,6 +173,13 @@ const (
 	Cr50KeyEnvUnspecified Cr50KeyEnv = "UNSPECIFIED"
 	Cr50KeyEnvProd        Cr50KeyEnv = "CR50_KEYENV_PROD"
 	Cr50KeyEnvDev         Cr50KeyEnv = "CR50_KEYENV_DEV"
+)
+
+const (
+	// Extra attributes for DUT to provide custom info.
+	ExtraAttributePools          = "POOLS"
+	ExtraAttributeServoSetup     = "SERVO_SETUP"
+	ExtraAttributeServoSetupDual = "SERVO_SETUP_DUAL"
 )
 
 // Dut holds info about setup used as testbed.

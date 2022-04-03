@@ -26,7 +26,7 @@ deps = {
 
   "infra/luci":
      "{chromium_git}/infra/luci/luci-py@" +
-     "9dc0a10f2d7d03e666052838354ad2ec35be9443",
+     "bd51a9097394ef662736f9ec0ea6cfeb4c7bd09a",
 
   # This unpinned dependency is present because it is used by the trybots for
   # the recipes-py repo; They check out infra with this at HEAD, and then apply
@@ -39,15 +39,15 @@ deps = {
 
   "infra/go/src/go.chromium.org/luci":
      "{chromium_git}/infra/luci/luci-go@" +
-     "82b09e185f23b27b939e1435c8abb7cef903b218",
+     "01cb6ea19c643c03eb9fae45757b14c6f57ca343",
 
   "infra/go/src/go.chromium.org/chromiumos/config":
      "{chromium_git}/chromiumos/config@" +
-     "8b010420221aea1f99941c937624d27e3c1c091b",
+     "dad32402130e08783ed01aa67c69bfbd7c2a3d61",
 
   "infra/go/src/go.chromium.org/chromiumos/infra/proto":
      "{chromium_git}/chromiumos/infra/proto@" +
-     "ab07a2c6ce05a4e919258af6466f1b48152aead5",
+     "67347c16c08bd5670ec528b9dac9767ad4b692f8",
 
   # Appengine third_party DEPS
   "infra/appengine/third_party/bootstrap":
@@ -110,7 +110,17 @@ deps = {
         "{chromium_git}/infra/third_party/npm_modules.git@" +
         "f83fafaa22f5ff396cf5306285ca3806d1b2cf1b",
      "condition": "checkout_linux or checkout_mac",
-  }
+  },
+
+  "gcloud": {
+    'packages': [
+      {
+        'package': 'infra/3pp/tools/gcloud/${{os=mac,linux}}-${{arch=amd64}}',
+        'version': 'version:2@379.0.0.chromium1',
+      }
+    ],
+    'dep_type': 'cipd',
+  },
 }
 
 hooks = [
@@ -137,15 +147,10 @@ hooks = [
   {
     "pattern": ".",
     "action": [
-      "python", "-u", "./infra/bootstrap/get_gcloud.py", "--dest=.",
-    ],
-  },
-  {
-    "pattern": ".",
-    "action": [
       "python", "-u", "-m", "pip", "install", "--no-deps", "--require-hashes",
       "-t", "./infra/appengine/monorail/lib",
       "-r", "./infra/appengine/monorail/requirements.py2.txt",
+      "--upgrade",
     ],
   },
 ]

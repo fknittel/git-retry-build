@@ -17,11 +17,11 @@ func crosDeployPlan() *Plan {
 			"Clean up",
 			"Servo has USB-key with require image",
 			"Device is pingable before deploy",
-			"DUT has expected OS version",
+			"DUT has expected OS",
 			"DUT has expected dev firmware",
 			"Switch to secure-mode and reboot",
-			"Collect DUT labels",
 			"Deployment checks",
+			"Collect DUT labels",
 			"DUT verify",
 		},
 		Actions: crosDeployAndRepairActions(),
@@ -29,6 +29,16 @@ func crosDeployPlan() *Plan {
 }
 
 func deployActions() map[string]*Action {
+	// Prepare critical actions as part of DUT verify.
+	var repairCriticalActions []string
+	for _, a := range crosRepairPlan().GetCriticalActions() {
+		// Exclude repair state to keep need_deploy state as default.
+		if a == "dut_state_repair_failed" {
+			continue
+		}
+		repairCriticalActions = append(repairCriticalActions, a)
+	}
+
 	return map[string]*Action{
 		"DUT is in dev-mode and allowed to boot from USB-key": {
 			Docs:        []string{"Verify that device is set to boot in DEV mode and enabled to boot from USB-drive."},
@@ -54,19 +64,27 @@ func deployActions() map[string]*Action {
 				"Power cycle DUT by RPM and wait",
 				"Set GBB flags to 0x18 by servo",
 				"Install OS in DEV mode",
+				"Install OS in DEV mode, with force to DEV-mode",
+				"Install OS in DEV mode with fresh image",
+				"Install OS in DEV mode, with force to DEV-mode (2)",
 			},
 		},
-		"DUT has expected OS version": {
-			Docs: []string{"Verify that device has stable version OS on it and version is match."},
+		"DUT has expected OS": {
+			Docs: []string{
+				"Verify that device has OS version from test channel, if not then install it.",
+			},
 			Dependencies: []string{
 				"Device is pingable before deploy",
 				"has_stable_version_cros_image",
 				"Device NOT booted from USB-drive",
 			},
-			ExecName: "cros_is_on_stable_version",
+			ExecName: "cros_is_os_test_channel",
 			RecoveryActions: []string{
 				"Quick provision OS",
 				"Install OS in DEV mode",
+				"Install OS in DEV mode, with force to DEV-mode",
+				"Install OS in DEV mode with fresh image",
+				"Install OS in DEV mode, with force to DEV-mode (2)",
 			},
 		},
 		"DUT has expected dev firmware": {
@@ -84,7 +102,9 @@ func deployActions() map[string]*Action {
 				"Force update FW on the DUT by factory mode.",
 				"Reboot device by servo",
 			},
-			Conditions: []string{"servo_state_is_working"},
+			Conditions: []string{
+				"servo_state_is_working",
+			},
 			Dependencies: []string{
 				"cros_ssh",
 				"Disable software-controlled write-protect for 'host'",
@@ -104,7 +124,8 @@ func deployActions() map[string]*Action {
 				"Force update FW on the DUT by factory mode.",
 				"Reboot device by host",
 			},
-			Conditions: []string{"servo_state_is_not_working"},
+			// Allowed to try this repair action even when we fail with servo-reboot.
+			// Conditions: []string{"servo_state_is_not_working"},
 			Dependencies: []string{
 				"cros_ssh",
 				"Disable software-controlled write-protect for 'host'",
@@ -119,12 +140,30 @@ func deployActions() map[string]*Action {
 				"updater_timeout:600",
 			},
 		},
+		"Need to run deployment checks": {
+			Docs: []string{
+				"Check if deployment check not need to be run.",
+				"If HWID or serial-number already collected from DUT then we already test it before.",
+			},
+			Conditions: []string{
+				"Is HWID known",
+				"Is serial-number known",
+			},
+			ExecName: "sample_fail",
+		},
 		"Deployment checks": {
-			Docs: []string{"Run some specif checks as part of deployment."},
+			Docs: []string{
+				"Run some special checks as part of deployment.",
+			},
+			Conditions: []string{
+				"Not Satlab device",
+				"Need to run deployment checks",
+			},
 			Dependencies: []string{
 				"Verify battery charging level",
-				"Verify RPM config (without battery)",
 				"Verify boot in recovery mode",
+				"Verify RPM config (without battery)",
+				"Verify RPM config with battery",
 			},
 			ExecName: "sample_pass",
 		},
@@ -164,36 +203,42 @@ func deployActions() map[string]*Action {
 				"halt_timeout:120",
 				"ignore_reboot_failure:false",
 			},
-			ExecTimeout: &durationpb.Duration{Seconds: 900},
+			ExecTimeout: &durationpb.Duration{Seconds: 1200},
 			RecoveryActions: []string{
 				// The only reason why it can fail on good DUT is that USB-key has not good image.
 				"Download stable image to USB-key",
 			},
 		},
-		"Verify RPM config (without battery)": {
-			Docs: []string{
-				"Verify RPM configs and set RPM state",
-				"Not applicable for cr50 servos based on b/205728276",
-				"Action is not critical as it updates own state.",
-			},
-			Conditions: []string{
-				"dut_servo_host_present",
-				"servo_state_is_working",
-				"is_servo_main_ccd_cr50",
-				"has_rpm_info",
-				"No Battery is present on device",
-			},
-			ExecName:               "rpm_audit",
-			ExecTimeout:            &durationpb.Duration{Seconds: 600},
-			AllowFailAfterRecovery: true,
-		},
 		"DUT verify": {
-			Docs:         []string{"Run all repair critcal actions."},
-			Dependencies: crosRepairPlan().GetCriticalActions(),
+			Docs: []string{
+				"Run all repair critcal actions.",
+			},
+			Dependencies: repairCriticalActions,
 			ExecName:     "sample_pass",
 		},
 		"Install OS in DEV mode": {
-			Docs: []string{"Install OS on the device from USB-key when device is in DEV-mode."},
+			Docs: []string{
+				"Install OS on the device from USB-key when device is in DEV-mode.",
+			},
+			Conditions: []string{
+				"servo_state_is_working",
+			},
+			Dependencies: []string{
+				"Boot DUT from USB in DEV mode",
+				"Run install after boot from USB-drive",
+				"Cold reset DUT by servo and wait to boot",
+				"Wait DUT to be SSHable after reset",
+			},
+			ExecName:   "sample_pass",
+			RunControl: RunControl_ALWAYS_RUN,
+		},
+		"Install OS in DEV mode, with force to DEV-mode": {
+			Docs: []string{
+				"Install OS on the device from USB-key when device is in DEV-mode.",
+			},
+			Conditions: []string{
+				"servo_state_is_working",
+			},
 			Dependencies: []string{
 				"Set GBB flags to 0x18 by servo",
 				"Boot DUT from USB in DEV mode",
@@ -201,27 +246,64 @@ func deployActions() map[string]*Action {
 				"Cold reset DUT by servo and wait to boot",
 				"Wait DUT to be SSHable after reset",
 			},
+			ExecName:   "sample_pass",
+			RunControl: RunControl_ALWAYS_RUN,
+		},
+		"Install OS in DEV mode, with force to DEV-mode (2)": {
+			Docs: []string{
+				"Second attempt to install image in DEV mode",
+			},
+			Conditions: []string{
+				"servo_state_is_working",
+			},
+			Dependencies: []string{
+				"Install OS in DEV mode, with force to DEV-mode",
+			},
 			ExecName: "sample_pass",
 		},
+		"Install OS in DEV mode with fresh image": {
+			Docs: []string{
+				"Download fresh usb image and Install OS from it in DEV-mode.",
+			},
+			Conditions: []string{
+				"servo_state_is_working",
+			},
+			Dependencies: []string{
+				"Download stable image to USB-key",
+				"Install OS in DEV mode",
+			},
+			ExecName:   "sample_pass",
+			RunControl: RunControl_ALWAYS_RUN,
+		},
 		"Clean up": {
-			Docs:         []string{"Verify that device is set to boot in DEV mode and enabled to boot from USB-drive."},
-			Conditions:   []string{"dut_servo_host_present"},
-			Dependencies: []string{"cros_remove_default_ap_file_servo_host"},
-			ExecName:     "sample_pass",
+			Docs: []string{
+				"Verify that device is set to boot in DEV mode and enabled to boot from USB-drive.",
+			},
+			Conditions: []string{
+				"dut_servo_host_present",
+			},
+			Dependencies: []string{
+				"cros_remove_default_ap_file_servo_host",
+			},
+			ExecName: "sample_pass",
 		},
 		"Collect DUT labels": {
 			Docs: []string{"Updating device info in inventory."},
 			Dependencies: []string{
 				"cros_ssh",
-				"cros_update_hwid_to_inventory",
-				"cros_update_serial_number_inventory",
+				"Read HWID from DUT",
+				"Read HWID from DUT (Satlab)",
+				"Read DUT serial-number from DUT",
+				"Read DUT serial-number from DUT (Satlab)",
 				"device_sku",
 				"servo_type_label",
 			},
 			ExecName: "sample_pass",
 		},
 		"servo_type_label": {
-			Docs:                   []string{"Update the servo type label for the DUT info."},
+			Docs: []string{
+				"Update the servo type label for the DUT info.",
+			},
 			ExecName:               "servo_update_servo_type_label",
 			AllowFailAfterRecovery: true,
 		},

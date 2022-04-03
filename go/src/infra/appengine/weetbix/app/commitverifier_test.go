@@ -19,14 +19,11 @@ import (
 	. "go.chromium.org/luci/common/testing/assertions"
 	cvv0 "go.chromium.org/luci/cv/api/v0"
 	cvv1 "go.chromium.org/luci/cv/api/v1"
-	"go.chromium.org/luci/gae/impl/memory"
 	"go.chromium.org/luci/server/tq"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"infra/appengine/weetbix/internal/config"
-	configpb "infra/appengine/weetbix/internal/config/proto"
 	"infra/appengine/weetbix/internal/cv"
 	controlpb "infra/appengine/weetbix/internal/ingestion/control/proto"
 	_ "infra/appengine/weetbix/internal/services/resultingester" // Needed to ensure task class is registered.
@@ -43,19 +40,6 @@ func TestHandleCVRun(t *testing.T) {
 	Convey(`Test CVRunPubSubHandler`, t, func() {
 		ctx := testutil.SpannerTestContext(t)
 		ctx, skdr := tq.TestingContext(ctx, nil)
-		ctx = memory.Use(ctx) // For test config.
-
-		// Builds and CV runs can come from different projects
-		// and still join. We test this by using two projects,
-		// one for builds, one for cv runs. Only the project
-		// for builds needs to be configured, as that is the
-		// project where data is ingested into.
-		configs := map[string]*configpb.ProjectConfig{
-			"buildproject": config.CreatePlaceholderProjectConfig(),
-		}
-
-		err := config.SetTestProjectConfig(ctx, configs)
-		So(err, ShouldBeNil)
 
 		// Setup two ingested tryjob builds.
 		buildIDs := []int64{87654321, 87654322}
@@ -190,6 +174,16 @@ func TestHandleCVRun(t *testing.T) {
 				So(sortTasks(tasks), ShouldResembleProto,
 					sortTasks(expectedTasks(expectedTaskTemplate, buildIDs)))
 			})
+			Convey(`With re-used tryjob`, func() {
+				// Assume that this tryjob was created by another CV run,
+				// so should not be ingested with this CV run.
+				run.Tryjobs[0].Reuse = true
+
+				processed, tasks := processCVRun(run)
+				So(processed, ShouldBeTrue)
+				So(sortTasks(tasks), ShouldResembleProto,
+					sortTasks(expectedTasks(expectedTaskTemplate, buildIDs[1:])))
+			})
 			Convey(`Failing Run`, func() {
 				run.Status = cvv0.Run_FAILED
 				expectedTaskTemplate.PresubmitRun.PresubmitRunSucceeded = false
@@ -283,6 +277,7 @@ func tryjob(bID int64) *cvv0.Tryjob {
 				},
 			},
 		},
+		Critical: (bID % 2) == 0,
 	}
 }
 
@@ -294,6 +289,7 @@ func expectedTasks(taskTemplate *taskspb.IngestTestResults, buildIDs []int64) []
 	res := make([]*taskspb.IngestTestResults, 0, len(buildIDs))
 	for _, buildID := range buildIDs {
 		t := proto.Clone(taskTemplate).(*taskspb.IngestTestResults)
+		t.PresubmitRun.Critical = ((buildID % 2) == 0)
 		t.Build = &controlpb.BuildResult{
 			Host:         bbHost,
 			Id:           buildID,

@@ -17,6 +17,7 @@ import (
 	"infra/cros/recovery/config"
 	"infra/cros/recovery/internal/execs"
 	"infra/cros/recovery/internal/log"
+	"infra/cros/recovery/logger"
 	"infra/cros/recovery/logger/metrics"
 )
 
@@ -131,51 +132,6 @@ func (r *recoveryEngine) runActions(ctx context.Context, actions []string, enabl
 	return nil
 }
 
-// recordActionCloser is a function that takes an error (the ultimate error produced by an action) and records
-// it inside a defer block.
-type recordActionCloser = func(error)
-
-// recordAction takes a context and an action name and records the initial action for a record.
-// The parameter action is assumed NOT to be nil. Also, this function indirectly mutates its parameter action.
-func (r *recoveryEngine) recordAction(ctx context.Context, actionName string, action *metrics.Action) recordActionCloser {
-	if r == nil {
-		log.Debugf(ctx, "RecoveryEngine is nil, skipping")
-		return nil
-	}
-	if r.args == nil {
-		log.Debugf(ctx, "Metrics is nil, skipping")
-		return nil
-	}
-	if r.args.Metrics != nil {
-		log.Debugf(ctx, "Recording metrics for action %q", actionName)
-		// Create the metric up front. Allow 30 seconds to talk to Karte.
-		createMetricCtx, createMetricCloser := context.WithTimeout(ctx, 30*time.Second)
-		defer createMetricCloser()
-		u, err := r.args.NewMetric(
-			createMetricCtx,
-			// TODO(gregorynisbet): Consider adding a new field to Karte to explicitly track the name
-			//                      assigned to an action by recoverylib.
-			fmt.Sprintf("action:%s", actionName),
-			action,
-		)
-		if err != nil {
-			log.Errorf(ctx, "Encountered error when creating action: %s", err)
-			return nil
-		}
-		// Here we intentionally close over the context "early", before the deadline is applied inside
-		// runAction.
-		return func(rErr error) {
-			// Update the metric. This contains information that we will not know until after the action ran.
-			updateMetricCtx, updateMetricCloser := context.WithTimeout(ctx, 30*time.Second)
-			defer updateMetricCloser()
-			u(updateMetricCtx, rErr)
-		}
-	} else {
-		log.Debugf(ctx, "Skipping metrics for action %q", actionName)
-		return nil
-	}
-}
-
 // runAction runs single action.
 // Execution steps:
 // 1) Check action's result in cache.
@@ -193,9 +149,9 @@ func (r *recoveryEngine) runAction(ctx context.Context, actionName string, enabl
 			step, ctx = build.StartStep(ctx, fmt.Sprintf("Run %s", actionName))
 			defer func() { step.End(rErr) }()
 		}
-		if r.args.Logger != nil {
-			r.args.Logger.IndentLogging()
-			defer func() { r.args.Logger.DedentLogging() }()
+		if i, ok := r.args.Logger.(logger.LogIndenter); ok {
+			i.Indent()
+			defer func() { i.Dedent() }()
 		}
 	}
 	log.Infof(ctx, "Action %q: started.", actionName)
@@ -326,9 +282,9 @@ func (r *recoveryEngine) runActionConditions(ctx context.Context, actionName str
 			step, ctx = build.StartStep(ctx, "Run continions")
 			defer func() { step.End(err) }()
 		}
-		if r.args.Logger != nil {
-			r.args.Logger.IndentLogging()
-			defer func() { r.args.Logger.DedentLogging() }()
+		if i, ok := r.args.Logger.(logger.LogIndenter); ok {
+			i.Indent()
+			defer func() { i.Dedent() }()
 		}
 	}
 	log.Debugf(ctx, "Action %q: running conditions...", actionName)
@@ -355,9 +311,9 @@ func (r *recoveryEngine) runDependencies(ctx context.Context, actionName string,
 			step, ctx = build.StartStep(ctx, "Run dependencies")
 			defer func() { step.End(rErr) }()
 		}
-		if r.args.Logger != nil {
-			r.args.Logger.IndentLogging()
-			defer func() { r.args.Logger.DedentLogging() }()
+		if i, ok := r.args.Logger.(logger.LogIndenter); ok {
+			i.Indent()
+			defer func() { i.Dedent() }()
 		}
 	}
 	err := r.runActions(ctx, a.GetDependencies(), enableRecovery)
@@ -380,9 +336,9 @@ func (r *recoveryEngine) runRecoveries(ctx context.Context, actionName string) (
 			step, ctx = build.StartStep(ctx, "Run recoveries")
 			defer func() { step.End(rErr) }()
 		}
-		if r.args.Logger != nil {
-			r.args.Logger.IndentLogging()
-			defer func() { r.args.Logger.DedentLogging() }()
+		if i, ok := r.args.Logger.(logger.LogIndenter); ok {
+			i.Indent()
+			defer func() { i.Dedent() }()
 		}
 	}
 	for _, recoveryName := range a.GetRecoveryActions() {
