@@ -189,6 +189,11 @@ chromium_genfiles("fch", "codesearch-gen-chromium-fuchsia")
 chromium_genfiles("lcr", "codesearch-gen-chromium-lacros")
 chromium_genfiles("lnx", "codesearch-gen-chromium-linux")
 chromium_genfiles(
+    "mac",
+    "codesearch-gen-chromium-mac",
+    os = "Mac-10.15",
+)
+chromium_genfiles(
     "win",
     "codesearch-gen-chromium-win",
     os = "Windows-10",
