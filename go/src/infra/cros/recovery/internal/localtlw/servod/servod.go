@@ -24,8 +24,6 @@ import (
 )
 
 const (
-	// Waiting 60 seconds when starting servod daemon.
-	startServodTimeout = 60
 	// Waiting 3 seconds when stopping servod daemon.
 	stopServodTimeout = 3
 	// GPIO control for USB device on servo-host
