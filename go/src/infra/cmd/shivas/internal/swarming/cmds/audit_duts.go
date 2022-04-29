@@ -35,6 +35,7 @@ type auditRun struct {
 	runVerifyRpmConfig       bool
 
 	actions string
+	paris   bool
 }
 
 // AuditDutsCmd contains audit-duts command specification
@@ -55,6 +56,7 @@ var AuditDutsCmd = &subcommands.Command{
 		c.Flags.BoolVar(&c.runVerifyDutMacaddr, "dut-macaddr", false, "Run the verifier to check and cache mac address of DUT NIC to Servo.")
 		c.Flags.BoolVar(&c.runVerifyRpmConfig, "rpm-config", false, "Run the verifier to check and cache mac address of DUT NIC to Servo.")
 		c.Flags.IntVar(&c.expirationMins, "expiration-mins", 10, "The expiration minutes of the task request.")
+		c.Flags.BoolVar(&c.paris, "paris", false, "Use PARIS rather than legacy flow (dogfood).")
 		return c
 	},
 }
@@ -72,6 +74,9 @@ func (c *auditRun) innerRun(a subcommands.Application, args []string, env subcom
 	err = c.validateArgs(args)
 	if err != nil {
 		return errors.Annotate(err, "audit dut").Err()
+	}
+	if c.paris {
+		return errors.Reason("audit duts: paris not yet supported in shivas for audit duts").Err()
 	}
 	ctx := cli.GetContext(a, c, env)
 	e := c.envFlags.Env()
