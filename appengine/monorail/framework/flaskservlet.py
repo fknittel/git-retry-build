@@ -16,16 +16,21 @@ Summary of page classes:
 """
 
 import gc
+import os
 import httplib
 import logging
 import time
+from businesslogic import work_env
 
 import ezt
+from features import features_bizobj, hotlist_views
 import flask
+from proto import project_pb2
 from search import query2ast
 
 import settings
-from framework import exceptions, framework_helpers
+from framework import alerts, exceptions, framework_helpers
+from framework import framework_views, servlet_helpers
 from framework import framework_constants
 from framework import monorailrequest
 from framework import permissions
@@ -37,6 +42,7 @@ from third_party import httpagentparser
 from google.appengine.api import app_identity
 from google.appengine.api import modules
 from google.appengine.api import users
+from tracker import tracker_views
 
 NONCE_LENGTH = 32
 
@@ -61,6 +67,7 @@ class FlaskServlet(object):
   Subclasses should override GatherPageData and/or ProcessFormData to
   handle requests.
   """
+  _MAIN_TAB_MODE = None  # Normally overridden in subclasses to be one of these:
 
   # This value should not typically be overridden.
   _TEMPLATE_PATH = framework_constants.TEMPLATE_PATH
@@ -287,8 +294,9 @@ class FlaskServlet(object):
             'reason': e.message,
             'http_response_code': httplib.FORBIDDEN,
         }
-        # with self.mr.profiler.Phase('gather base data'):
-        #   page_data.update(self.GatherBaseData(self.mr, nonce))
+        with self.mr.profiler.Phase('gather base data'):
+          page_data.update(self.GatherBaseData(self.mr, nonce))
+        # TODO: (crbug.com/monorail/10863)
         # self._AddHelpDebugPageData(page_data)
         self._missing_permissions_template.WriteFlaskResponse(
             self.response, page_data, content_type=self.content_type)
@@ -322,8 +330,7 @@ class FlaskServlet(object):
       # TODO: (crbug.com/monorail/10860)
       # self._MaybeRedirectToBrandedDomain(self.request, mr.project_name)
 
-      # TODO: (crbug.com/monorail/10869)
-      # page_data = self.GatherBaseData(mr, nonce)
+      page_data = self.GatherBaseData(mr, nonce)
       page_data = {}
 
     with mr.profiler.Phase('page processing'):
@@ -339,6 +346,275 @@ class FlaskServlet(object):
     """Return a dict of page-specific ezt data."""
     return {}
     # raise MethodNotSupportedError()
+
+  def GatherBaseData(self, mr, nonce):
+    """Return a dict of info used on almost all pages."""
+    project = mr.project
+
+    project_summary = ''
+    project_alert = None
+    project_read_only = False
+    project_home_page = ''
+    project_thumbnail_url = ''
+    if project:
+      project_summary = project.summary
+      # TODO: (crbug.com/monorail/10870)
+      # project_alert = _CalcProjectAlert(project)
+      project_read_only = project.read_only_reason
+      project_home_page = project.home_page
+      project_thumbnail_url = tracker_views.LogoView(project).thumbnail_url
+
+    with work_env.WorkEnv(mr, self.services) as we:
+      is_project_starred = False
+      project_view = None
+      if mr.project:
+        if permissions.UserCanViewProject(mr.auth.user_pb,
+                                          mr.auth.effective_ids, mr.project):
+          is_project_starred = we.IsProjectStarred(mr.project_id)
+          project_view = template_helpers.PBProxy(mr.project)
+
+    grid_x_attr = None
+    grid_y_attr = None
+    hotlist_view = None
+    if mr.hotlist:
+      users_by_id = framework_views.MakeAllUserViews(
+          mr.cnxn, self.services.user,
+          features_bizobj.UsersInvolvedInHotlists([mr.hotlist]))
+      hotlist_view = hotlist_views.HotlistView(
+          mr.hotlist, mr.perms, mr.auth, mr.viewed_user_auth.user_id,
+          users_by_id,
+          self.services.hotlist_star.IsItemStarredBy(
+              mr.cnxn, mr.hotlist.hotlist_id, mr.auth.user_id))
+      grid_x_attr = mr.x.lower()
+      grid_y_attr = mr.y.lower()
+
+    app_version = os.environ.get('CURRENT_VERSION_ID')
+
+    viewed_username = None
+    if mr.viewed_user_auth.user_view:
+      viewed_username = mr.viewed_user_auth.user_view.username
+
+    config = None
+    if mr.project_id and self.services.config:
+      with mr.profiler.Phase('getting config'):
+        config = self.services.config.GetProjectConfig(mr.cnxn, mr.project_id)
+      grid_x_attr = (mr.x or config.default_x_attr).lower()
+      grid_y_attr = (mr.y or config.default_y_attr).lower()
+
+    viewing_self = mr.auth.user_id == mr.viewed_user_auth.user_id
+    offer_saved_queries_subtab = (
+        viewing_self or mr.auth.user_pb and mr.auth.user_pb.is_site_admin)
+
+    # TODO: (crbug.com/monorail/10871)
+    # login_url = _SafeCreateLoginURL(mr)
+    # logout_url = _SafeCreateLogoutURL(mr)
+    login_url = '/'
+    logout_url = '/'
+    logout_url_goto_home = users.create_logout_url('/')
+    version_base = _VersionBaseURL(mr.request)
+
+    base_data = {
+        # EZT does not have constants for True and False, so we pass them in.
+        'True':
+            ezt.boolean(True),
+        'False':
+            ezt.boolean(False),
+        'local_mode':
+            ezt.boolean(settings.local_mode),
+        'site_name':
+            settings.site_name,
+        'show_search_metadata':
+            ezt.boolean(False),
+        'page_template':
+            self._PAGE_TEMPLATE,
+        'main_tab_mode':
+            self._MAIN_TAB_MODE,
+        'project_summary':
+            project_summary,
+        'project_home_page':
+            project_home_page,
+        'project_thumbnail_url':
+            project_thumbnail_url,
+        'hotlist_id':
+            mr.hotlist_id,
+        'hotlist':
+            hotlist_view,
+        'hostport':
+            mr.request.host,
+        'absolute_base_url':
+            '%s://%s' % (mr.request.scheme, mr.request.host),
+        'project_home_url':
+            None,
+        'link_rel_canonical':
+            None,  # For specifying <link rel="canonical">
+        'projectname':
+            mr.project_name,
+        'project':
+            project_view,
+        'project_is_restricted':
+            ezt.boolean(_ProjectIsRestricted(mr)),
+        'offer_contributor_list':
+            ezt.boolean(permissions.CanViewContributorList(mr, mr.project)),
+        'logged_in_user':
+            mr.auth.user_view,
+        'form_token':
+            None,  # Set to a value below iff the user is logged in.
+        'form_token_path':
+            None,
+        'token_expires_sec':
+            None,
+        'xhr_token':
+            None,  # Set to a value below iff the user is logged in.
+        'flag_spam_token':
+            None,
+        'nonce':
+            nonce,
+        'perms':
+            mr.perms,
+        'warnings':
+            mr.warnings,
+        'errors':
+            mr.errors,
+        'viewed_username':
+            viewed_username,
+        'viewed_user':
+            mr.viewed_user_auth.user_view,
+        'viewed_user_pb':
+            template_helpers.PBProxy(mr.viewed_user_auth.user_pb),
+        'viewing_self':
+            ezt.boolean(viewing_self),
+        'viewed_user_id':
+            mr.viewed_user_auth.user_id,
+        'offer_saved_queries_subtab':
+            ezt.boolean(offer_saved_queries_subtab),
+        'currentPageURL':
+            mr.current_page_url,
+        'currentPageURLEncoded':
+            mr.current_page_url_encoded,
+        'login_url':
+            login_url,
+        'logout_url':
+            logout_url,
+        'logout_url_goto_home':
+            logout_url_goto_home,
+        'continue_issue_id':
+            mr.continue_issue_id,
+        'feedback_email':
+            settings.feedback_email,
+        'category_css':
+            None,  # Used to specify a category of stylesheet
+        'category2_css':
+            None,  # specify a 2nd category of stylesheet if needed.
+        'page_css':
+            None,  # Used to add a stylesheet to a specific page.
+        'can':
+            mr.can,
+        'query':
+            mr.query,
+        'colspec':
+            None,
+        'sortspec':
+            mr.sort_spec,
+
+        # Options for issuelist display
+        'grid_x_attr':
+            grid_x_attr,
+        'grid_y_attr':
+            grid_y_attr,
+        'grid_cell_mode':
+            mr.cells,
+        'grid_mode':
+            None,
+        'list_mode':
+            None,
+        'chart_mode':
+            None,
+        'is_cross_project':
+            ezt.boolean(False),
+
+        # for project search (some also used in issue search)
+        'start':
+            mr.start,
+        'num':
+            mr.num,
+        'groupby':
+            mr.group_by_spec,
+        'q_field_size':
+            (
+                min(
+                    framework_constants.MAX_ARTIFACT_SEARCH_FIELD_SIZE,
+                    max(
+                        framework_constants.MIN_ARTIFACT_SEARCH_FIELD_SIZE,
+                        len(mr.query) + framework_constants.AUTOSIZE_STEP))),
+        'mode':
+            None,  # Display mode, e.g., grid mode.
+        'ajah':
+            mr.ajah,
+        'table_title':
+            mr.table_title,
+        'alerts':
+            alerts.AlertsView(mr),  # For alert.ezt
+        'project_alert':
+            project_alert,
+        'title':
+            None,  # First part of page title
+        'title_summary':
+            None,  # Appended to title on artifact detail pages
+        'project_read_only':
+            ezt.boolean(project_read_only),
+        'site_read_only':
+            ezt.boolean(settings.read_only),
+        'banner_time':
+            servlet_helpers.GetBannerTime(settings.banner_time),
+        'read_only':
+            ezt.boolean(settings.read_only or project_read_only),
+        'site_banner_message':
+            settings.banner_message,
+        'robots_no_index':
+            None,
+        'analytics_id':
+            settings.analytics_id,
+        'is_project_starred':
+            ezt.boolean(is_project_starred),
+        'version_base':
+            version_base,
+        'app_version':
+            app_version,
+        'gapi_client_id':
+            settings.gapi_client_id,
+        'viewing_user_page':
+            ezt.boolean(False),
+        'old_ui_url':
+            None,
+        'new_ui_url':
+            None,
+        'is_member':
+            ezt.boolean(False),
+    }
+
+    if mr.project:
+      base_data['project_home_url'] = '/p/%s' % mr.project_name
+
+    # Always add xhr-xsrf token because even anon users need some
+    # pRPC methods, e.g., autocomplete, flipper, and charts.
+    base_data['token_expires_sec'] = xsrf.TokenExpiresSec()
+    base_data['xhr_token'] = xsrf.GenerateToken(
+        mr.auth.user_id, xsrf.XHR_SERVLET_PATH)
+    # Always add other anti-xsrf tokens when the user is logged in.
+    if mr.auth.user_id:
+      # TODO: (crbug.com/monorail/10871)
+      # form_token_path = self._FormHandlerURL(mr.request.path)
+      form_token_path = '/'
+      base_data['form_token'] = xsrf.GenerateToken(
+          mr.auth.user_id, form_token_path)
+      base_data['form_token_path'] = form_token_path
+
+    return base_data
+
+
+def _ProjectIsRestricted(mr):
+  """Return True if the mr has a 'private' project."""
+  return (mr.project and mr.project.access != project_pb2.ProjectAccess.ANYONE)
 
 
 def _VersionBaseURL(request):
