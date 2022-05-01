@@ -86,14 +86,6 @@ func UpdateAnalysisAndBugs(ctx context.Context, monorailHost, gcpProject string,
 		}
 	}()
 
-	if !enable {
-		// Report that bug updates are disabled.
-		for project := range statusByProject {
-			statusByProject[project] = "disabled"
-		}
-		return
-	}
-
 	mc, err := monorail.NewClient(ctx, monorailHost)
 	if err != nil {
 		return err
@@ -130,6 +122,7 @@ func UpdateAnalysisAndBugs(ctx context.Context, monorailHost, gcpProject string,
 			analysisClient:     ac,
 			monorailClient:     mc,
 			simulateBugUpdates: simulate,
+			enableBugUpdates:   enable,
 			maxBugsFiledPerRun: 1,
 		}
 		// Isolate other projects from bug update errors
@@ -156,6 +149,7 @@ type updateOptions struct {
 	project            string
 	analysisClient     AnalysisClient
 	monorailClient     *monorail.Client
+	enableBugUpdates   bool
 	simulateBugUpdates bool
 	maxBugsFiledPerRun int
 }
@@ -177,6 +171,10 @@ func updateAnalysisAndBugsForProject(ctx context.Context, opts updateOptions) er
 
 	if err := opts.analysisClient.RebuildAnalysis(ctx, opts.project); err != nil {
 		return errors.Annotate(err, "update cluster summaries").Err()
+	}
+
+	if !opts.enableBugUpdates {
+		return nil
 	}
 
 	monorailCfg := projectCfg.Config.Monorail

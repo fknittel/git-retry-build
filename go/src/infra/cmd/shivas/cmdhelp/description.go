@@ -683,48 +683,39 @@ This file must contain required machine field and optional nics/drac field.
 
 Example Browser machine creation request:
 {
-    "name": "cr85-XXX",
-    "serialNumber": "FVSMVXX",
+  "machine": {
+    "name": "cr254-32-3930",
+    "serialNumber": "92YL673",
     "location": {
-        "rack": "cr85XX",
-        "zone": "ZONE_ATL97"
+      "rack": "cr254",
+      "zone": "ZONE_ATL97"
     },
-    "tags": ["dell", "8g"],
     "chromeBrowserMachine": {
-        "displayName": "cr85-XXX",
-        "chromePlatform": "Dell_R720",
-        "deploymentTicket": "846026XX",
-        "description": "adding a machine cr85-XXX",
-        "kvmInterface": {
-            "kvm": "ax101-kvm1",
-            "port": 34
+      "displayName": "cr254-32-3930",
+      "chromePlatform": "Dell_3930_RX5500XT",
+      "deploymentTicket": "crbug/1275174",
+      "kvmInterface": {
+        "kvm": "cr254-kvm1",
+        "portName": "32"
+      },
+      "nicObjects": [
+        {
+          "name": "cr254-32-3930:eth0",
+          "macAddress": "A4BB6D5A1BBF",
+          "switchInterface": {
+            "switch": "eq188.atl97",
+            "portName": "32"
+          }
         },
-        "rpmInterface": {
-            "rpm": "rpm-23",
-            "port": 65
-        },
-        "nicObjects": [{
-            "name": "cr85-XXX:eth0",
-            "macAddress": "ec:f4:bb:c4:6e:qq",
-            "switchInterface": {
-                "switch": "eq082.atl97",
-                "portName": "11"
-            },
-            "tags": ["dell", "8g"]
-        }],
-        "dracObject": {
-            "name": "lin64-38-m0-dracXXX",
-            "displayName": "cr85-XXX:drac",
-            "macAddress": "5c:f9:dd:fd:6d:ff",
-            "switchInterface": {
-                "switch": "eq082.atl97",
-                "portName": "41"
-            },
-            "password": "WelcomeDrac***",
-            "tags": ["dell", "8g"]
+        {
+          "name": "cr254-32-3930:eth1",
+          "macAddress": "A4BB6D5A1BC0"
         }
+      ]
     }
+  }
 }
+
 
 Example OS machine creation request:
 {
@@ -2125,12 +2116,30 @@ Add adds specified routers or wifi features to the DUT and leaves what is alread
 Delete deletes specified routers or wifi features in the DUT and leaves remainining untouched.
 Replace replaces the entire set of routers or wifi features with the specified list.
 
+A json file with wifi struct defined can be used to update wifi struct
+
+A csv file with header dut, wifi_features, router can be used to update multiple duts.
+Example of CSV format:
+dut,wifi_features,router,router,[router,...]
+d1,f1;f2,hostname:h1;model:m1;feature:f1;feature:f2,hostname:h2
+d2,f2,,hostname:h3;model:m2
+
+
+
 Examples:
 shivas add peripheral-wifi -dut {d} -wifi-feature {f1} -wifi-feature {f2} -router {hostname:h1,build_target:b1,model:m1,feature:f2} -router {hostname:h2,build_target:b1,model:m1,feature:f3}
 shivas delete peripheral-wifi -dut {d} -router {hostanme:h1} -router {hostname:h2}
 shivas replace peripheral-wifi -dut {d} -wifi-feature {f3} -wifi-feature {f4}
 shivas replace peripheral-wifi -dut {d} -router {hostname:h3,build_target:b1}
 shivas replace peripheral-wifi -dut {d} -wifi-feature {f5} -wifi-feature {f6} -router {hostname:h6,build_target:b2}
+
+shivas add peripheral-wifi -dut {d} -f {fpath.json}
+shivas replace peripheral-wifi -dut {d} -f {fpath.json}
+shivas delete peripheral-wifi -dut {d} -f {fpath.json}
+
+shivas add peripheral-wifi -f {fpath.csv}
+shivas replace peripheral-wifi -f {fpath.csv}
+shivas delete peripheral-wifi -f {fpath.csv}
 `
 )
 

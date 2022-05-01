@@ -5,7 +5,7 @@ cron:
 
 - description: push bots for admin tasks for need_repair
   url: /internal/cron/push-bots-for-admin-tasks
-  schedule: every 5 minutes
+  schedule: every 2 minutes
   retry_parameters:
     # We see a small number of jobs fails with code 500 (internal failure of GAE).
     # As the handler is idempotent & has low time cost, retry won't cause any
@@ -43,28 +43,6 @@ cron:
   url: /internal/cron/push-admin-audit-usbkey-tasks-for-duts
   schedule: every sunday 1:15
   timezone: America/Los_Angeles
-
-- description: sync device configs to inventory file and datastore
-  url: /internal/cron/update-device-configs
-  schedule: every 5 minutes
-
-- description: sync manufacturing configs to inventory file
-  url: /internal/cron/update-manufacturing-configs
-  schedule: every 5 minutes
-
-- description: report metrics related to swarming bots.
-  url: /internal/cron/report-bots
-  # No retry, if it fails it can catch the next cron train.
-  schedule: every 5 minutes
-
-- description: report metrics of Duts in inventory.
-  url: /internal/cron/report-inventory
-  # No retry, if it fails it can catch the next cron train.
-  schedule: every 5 minutes
-
-- description: refresh inventory
-  url: /internal/cron/refresh-inventory
-  schedule: every 1 minutes
 
 - description: Import config.cfg from LUCI Config
   url: /internal/cron/import-service-config

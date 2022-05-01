@@ -22,13 +22,12 @@ from testing_utils import testing
 import mock
 
 from go.chromium.org.luci.buildbucket.proto import build_pb2
-from go.chromium.org.luci.buildbucket.proto import builder_pb2
+from go.chromium.org.luci.buildbucket.proto import builder_common_pb2
 from go.chromium.org.luci.buildbucket.proto import project_config_pb2
 from go.chromium.org.luci.buildbucket.proto import service_config_pb2
 from test import test_util
 import config
 import errors
-import flatten_swarmingcfg
 
 
 def short_bucket_cfg(cfg):
@@ -44,6 +43,10 @@ def without_builders(cfg):
   return cfg
 
 
+# NOTE: This has the pool dimension, but other uses of LUCI_CHROMIUM_TRY
+# do NOT list pool dimension explicitly; This is because config.py has api
+# little-used feature where pool is 'automatically' filled in from the project
+# and bucket name as 'luci.$project.$bucket' if it's omitted.
 LUCI_CHROMIUM_TRY = test_util.parse_bucket_cfg(
     '''
     name: "luci.chromium.try"
@@ -56,7 +59,6 @@ LUCI_CHROMIUM_TRY = test_util.parse_bucket_cfg(
       identity: "user:johndoe@example.com"
     }
     swarming {
-      hostname: "swarming.example.com"
       task_template_canary_percentage { value: 10 }
       builders {
         name: "linux"
@@ -151,7 +153,9 @@ def parse_cfg(text):
 
 
 def errmsg(text):
-  return validation_context.Message(severity=logging.ERROR, text=text)
+  return validation_context.Message(
+      severity=logging.ERROR, text=text.decode('utf-8')
+  )
 
 
 class ConfigTest(testing.AppengineTestCase):
@@ -284,14 +288,6 @@ class ConfigTest(testing.AppengineTestCase):
             group: "all"
           }
         }
-        builder_mixins {
-          name: "recipe-x"
-          recipe {
-            cipd_package: "infra/recipe_bundle"
-            cipd_version: "refs/heads/master"
-            name: "x"
-          }
-        }
         buckets {
           name: "try"
           acl_sets: "public"
@@ -300,14 +296,19 @@ class ConfigTest(testing.AppengineTestCase):
             identity: "johndoe@example.com"
           }
           swarming {
-            hostname: "swarming.example.com"
             task_template_canary_percentage { value: 10 }
-            builder_defaults {
-              mixins: "recipe-x"
-            }
             builders {
               name: "linux"
               dimensions: "os:Linux"
+              recipe {
+                name: "x"
+                cipd_version: "refs/heads/master"
+                cipd_package: "infra/recipe_bundle"
+              }
+              swarming_host: "swarming.example.com"
+              task_template_canary_percentage {
+                value: 10
+              }
             }
           }
         }
@@ -340,16 +341,14 @@ class ConfigTest(testing.AppengineTestCase):
       buckets {
         name: "try"
         swarming {
-          builder_defaults {
+          builders {
+            name: "linux"
             dimensions: "pool:Dart.LUCI"
             recipe {
               cipd_package: "infra/recipe_bundle"
               cipd_version: "refs/heads/master"
               name: "x"
             }
-          }
-          builders {
-            name: "linux"
           }
         }
       }
@@ -447,14 +446,6 @@ class ConfigTest(testing.AppengineTestCase):
   def test_cron_update_buckets_with_existing(self, get_project_configs):
     chromium_buildbucket_cfg = parse_cfg(
         '''
-        builder_mixins {
-          name: "recipe-x"
-          recipe {
-            cipd_package: "infra/recipe_bundle"
-            cipd_version: "refs/heads/master"
-            name: "x"
-          }
-        }
         buckets {
           name: "master.tryserver.chromium.linux"
           acls {
@@ -488,14 +479,17 @@ class ConfigTest(testing.AppengineTestCase):
             identity: "johndoe@example.com"
           }
           swarming {
-            hostname: "swarming.example.com"
             task_template_canary_percentage { value: 10 }
-            builder_defaults {
-              mixins: "recipe-x"
-            }
             builders {
               name: "linux"
+              swarming_host: "swarming.example.com"
+              task_template_canary_percentage { value: 10 }
               dimensions: "os:Linux"
+              recipe {
+                cipd_package: "infra/recipe_bundle"
+                cipd_version: "refs/heads/master"
+                name: "x"
+              }
             }
           }
         }
@@ -507,16 +501,14 @@ class ConfigTest(testing.AppengineTestCase):
       buckets {
         name: "try"
         swarming {
-          builder_defaults {
+          builders {
+            name: "linux"
             dimensions: "pool:Dart.LUCI"
             recipe {
               cipd_package: "infra/recipe_bundle"
               cipd_version: "refs/heads/master"
               name: "x"
             }
-          }
-          builders {
-            name: "linux"
           }
         }
       }
@@ -551,12 +543,14 @@ class ConfigTest(testing.AppengineTestCase):
 
     # Will be updated.
     config.put_builders(
-        'chromium', 'try', project_config_pb2.Builder(name='linux')
+        'chromium', 'try', project_config_pb2.BuilderConfig(name='linux')
     )
     # Will not be updated.
     config.put_builders('dart', 'try', LUCI_DART_TRY.swarming.builders[0])
     # Will be deleted.
-    config.put_builders('dart', 'try', project_config_pb2.Builder(name='linux'))
+    config.put_builders(
+        'dart', 'try', project_config_pb2.BuilderConfig(name='linux')
+    )
     # Will be deleted.
     config.put_builders(
         'chromium', 'try', LUCI_CHROMIUM_TRY.swarming.builders[0]
@@ -664,94 +658,6 @@ class ConfigTest(testing.AppengineTestCase):
     actual = config.Builder.make_key('dart', 'try', 'linux').get()
     self.assertTrue(actual)
     self.assertEqual(actual.config, LUCI_DART_TRY.swarming.builders[0])
-
-  @mock.patch('components.config.get_project_configs', autospec=True)
-  def flatten_builder_config(self, project_cfg, get_project_configs):
-    get_project_configs.return_value = {
-        'proj': ('deadbeef', parse_cfg(project_cfg), None),
-    }
-    config.cron_update_buckets()
-    builders = config.Builder.query().fetch()
-    self.assertEqual(len(builders), 1)
-    return builders[0].config
-
-  def test_builder_flattening(self):
-    # pylint: disable=no-value-for-parameter
-    actual = self.flatten_builder_config(
-        '''
-        builder_mixins {
-          name: "m"
-          dimensions: "a:b1"
-          dimensions: "a:b2"
-          dimensions: "60:a:b3"
-        }
-        buckets {
-          name: "bucket"
-          swarming {
-            builder_defaults {
-              dimensions: "a:b4"
-              dimensions: "a:b5"
-              dimensions: "120:a:b6"
-            }
-            builders {
-              name: "builder"
-              dimensions: "a:b7"
-              dimensions: "a:b8"
-              dimensions: "180:a:b9"
-              mixins: "m"
-            }
-          }
-        }
-        '''
-    )
-    expected = text_format.Parse(
-        '''
-        name: "builder"
-        dimensions: "180:a:b9"
-        dimensions: "a:b7"
-        dimensions: "a:b8"
-        dimensions: "pool:luci.proj.bucket"
-        ''', project_config_pb2.Builder()
-    )
-    self.assertEqual(actual, expected)
-
-  def test_builder_flattening_resultdb(self):
-    # pylint: disable=no-value-for-parameter
-    actual = self.flatten_builder_config(
-        '''
-        buckets {
-          name: "bucket"
-          swarming {
-            builders {
-              name: "builder"
-              resultdb {
-                enable: true
-                bq_exports {
-                  project: "proj"
-                  dataset: "dataset"
-                  table: "table"
-                }
-              }
-            }
-          }
-        }
-        '''
-    )
-    expected = text_format.Parse(
-        '''
-        name: "builder"
-        dimensions: "pool:luci.proj.bucket"
-        resultdb {
-          enable: true
-          bq_exports {
-            project: "proj"
-            dataset: "dataset"
-            table: "table"
-          }
-        }
-        ''', project_config_pb2.Builder()
-    )
-    self.assertEqual(actual, expected)
 
   def cfg_validation_test(self, cfg, expected_messages):
     ctx = config_component.validation.Context()
@@ -894,13 +800,6 @@ class ConfigTest(testing.AppengineTestCase):
         )
     )
 
-  def test_is_swarming_config(self):
-    cfg = project_config_pb2.Bucket()
-    self.assertFalse(config.is_swarming_config(cfg))
-
-    cfg.swarming.hostname = 'exists.now'
-    self.assertTrue(config.is_swarming_config(cfg))
-
 
 class ValidateBucketIDTest(testing.AppengineTestCase):
 
@@ -944,7 +843,7 @@ class BuilderMatchesTest(testing.AppengineTestCase):
     predicate = service_config_pb2.BuilderPredicate(
         regex=regex, regex_exclude=regex_exclude
     )
-    builder_id = builder_pb2.BuilderID(
+    builder_id = builder_common_pb2.BuilderID(
         project='chromium',
         bucket='try',
         builder='linux-rel',

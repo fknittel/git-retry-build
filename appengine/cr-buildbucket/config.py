@@ -29,13 +29,8 @@ from go.chromium.org.luci.buildbucket.proto import project_config_pb2
 from go.chromium.org.luci.buildbucket.proto import service_config_pb2
 import errors
 
-CURRENT_BUCKET_SCHEMA_VERSION = 12
+CURRENT_BUCKET_SCHEMA_VERSION = 13
 ACL_SET_NAME_RE = re.compile('^[a-z0-9_]+$')
-
-# The default percentage of builds that are marked as canary.
-# This number is relatively high so we treat canary seriously and that we have
-# a strong signal if the canary is broken.
-_DEFAULT_CANARY_PERCENTAGE = 10
 
 # The memcache key for get_all_bucket_ids_async cache.
 _MEMCACHE_ALL_BUCKET_IDS_KEY = 'all_bucket_ids_v1'
@@ -118,12 +113,6 @@ def validate_buildbucket_cfg(cfg, ctx):
 
       validate_access_list(acl_set.acls, ctx)
 
-  mixin_ctx = validation.Context(  # pragma: no cover
-      on_message=lambda msg: ctx.msg(msg.severity, '%s', msg.text))
-  swarmingcfg.validate_builder_mixins(cfg.builder_mixins, mixin_ctx)
-  mixins_are_valid = not mixin_ctx.result().has_errors
-  mixin_by_name = {m.name: m for m in cfg.builder_mixins}
-
   bucket_names = set()
 
   for i, bucket in enumerate(cfg.buckets):
@@ -151,8 +140,7 @@ def validate_buildbucket_cfg(cfg, ctx):
       if bucket.HasField('swarming'):  # pragma: no cover
         with ctx.prefix('swarming: '):
           swarmingcfg.validate_project_cfg(
-              bucket.swarming, well_known_experiments, mixin_by_name,
-              mixins_are_valid, ctx
+              bucket.swarming, well_known_experiments, ctx
           )
 
 
@@ -295,7 +283,7 @@ class Builder(ndb.Model):
     return False
 
   # Binary config content.
-  config = datastore_utils.ProtobufProperty(project_config_pb2.Builder)
+  config = datastore_utils.ProtobufProperty(project_config_pb2.BuilderConfig)
   # Hash used for fast deduplication of configs. Set automatically on put.
   config_hash = ndb.StringProperty(required=True)
 
@@ -475,11 +463,8 @@ def cron_update_buckets():
   """Synchronizes bucket entities with configs fetched from luci-config.
 
   When storing in the datastore, inlines the referenced ACL sets and clears
-  the acl_sets message field. Also inlines swarmbucket builder defaults and
-  mixins and clears Builder.mixins field.
+  the acl_sets message field.
   """
-  import flatten_swarmingcfg
-
   config_map = config.get_project_configs(
       cfg_path(), project_config_pb2.BuildbucketCfg
   )
@@ -507,7 +492,6 @@ def cron_update_buckets():
         project_cfg.SerializeToString(deterministic=True)
     ).hexdigest()
     acl_sets_by_name = {a.name: a for a in project_cfg.acl_sets}
-    builder_mixins_by_name = {m.name: m for m in project_cfg.builder_mixins}
 
     for bucket_cfg in project_cfg.buckets:
       bucket_key = Bucket.make_key(
@@ -540,31 +524,15 @@ def cron_update_buckets():
       builders_to_delete = set(builders)
       builders_to_put = []
       if bucket_cfg.HasField('swarming'):
-        # Pull builder defaults out and apply defaults.
-        defaults = bucket_cfg.swarming.builder_defaults
-        bucket_cfg.swarming.ClearField('builder_defaults')
-        if not any(d.startswith('pool:') for d in defaults.dimensions):
-          defaults.dimensions.append(
-              'pool:luci.%s.%s' %
-              (project_id, short_bucket_name(bucket_cfg.name))
-          )
-        defaults.swarming_host = (
-            defaults.swarming_host or bucket_cfg.swarming.hostname
-        )
-
-        f = 'task_template_canary_percentage'
-        if not defaults.HasField(f) and bucket_cfg.swarming.HasField(f):
-          defaults.task_template_canary_percentage.CopyFrom(
-              bucket_cfg.swarming.task_template_canary_percentage
-          )
-
         for b in bucket_cfg.swarming.builders:
-          flatten_swarmingcfg.flatten_builder(
-              b, defaults, builder_mixins_by_name
-          )
           builder_key = Builder.make_key(project_id, bucket_key.id(), b.name)
           builders_to_delete.discard(builder_key)
           builder = builders.get(builder_key)
+          if not any(d.startswith('pool:') for d in b.dimensions):
+            b.dimensions.append(
+                'pool:luci.%s.%s' %
+                (project_id, short_bucket_name(bucket_cfg.name))
+            )
           if builder and builder.config_hash == Builder.compute_hash(b):
             continue
           builders_to_put.append(b)
@@ -643,7 +611,7 @@ def builder_matches(builder_id_msg, predicate):
   """Returns True iff builder_id_msg matches the predicate.
 
   Args:
-    * builder_id_msg (builder_pb2.BuilderID)
+    * builder_id_msg (builder_common_pb2.BuilderID)
     * predicate (service_config_pb2.BuilderPredicate)
   """
   builder_str = builder_id_string(builder_id_msg)

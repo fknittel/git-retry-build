@@ -13,6 +13,7 @@ import (
 
 	"go.chromium.org/luci/common/errors"
 
+	"infra/cros/recovery/internal/components/servo"
 	"infra/cros/recovery/internal/execs"
 	"infra/cros/recovery/internal/log"
 	"infra/cros/recovery/tlw"
@@ -47,14 +48,6 @@ const (
 	// File containing Configuration
 	configurationFileName = "configuration"
 
-	// Various servo-types
-	SERVO_V4_TYPE          = "servo_v4"
-	SERVO_V4P1_TYPE        = "servo_v4p1"
-	SERVO_CR50_TYPE        = "ccd_cr50"
-	SERVO_C2D2_TYPE        = "c2d2"
-	SERVO_SERVO_MICRO_TYPE = "servo_micro"
-	SERVO_SWEETBERRY_TYPE  = "sweetberry"
-
 	// This character delimits the prefix that represents base-name of
 	// servo hub path. For example, given the root servo base name
 	// '1-3.2.1', the prefix '1-3.2' represents the servo hub. The
@@ -68,12 +61,13 @@ const (
 
 // Mapping of various vid-pid values to servo types.
 var vidPidServoTypes = map[string]string{
-	"18d1:501b": SERVO_V4_TYPE,
-	"18d1:520d": SERVO_V4P1_TYPE,
-	"18d1:5014": SERVO_CR50_TYPE,
-	"18d1:501a": SERVO_SERVO_MICRO_TYPE,
-	"18d1:5041": SERVO_C2D2_TYPE,
-	"18d1:5020": SERVO_SWEETBERRY_TYPE,
+	"18d1:501b": servo.SERVO_V4,
+	"18d1:520d": servo.SERVO_V4P1,
+	"18d1:5014": servo.CCD_CR50,
+	"18d1:504a": servo.CCD_GSC,
+	"18d1:501a": servo.SERVO_MICRO,
+	"18d1:5041": servo.C2D2,
+	"18d1:5020": servo.SWEETBERRY,
 }
 
 // GetRootServo fetches the ServoTopologyItem representing the
@@ -132,7 +126,7 @@ func RereadServoFwVersion(ctx context.Context, runner execs.Runner, servo *tlw.S
 	}
 }
 
-// Get the path of root servo on servo host.
+// GetRootServoPath gets the path of root servo on servo host.
 func GetRootServoPath(ctx context.Context, runner execs.Runner, servoSerial string) (string, error) {
 	servoPath, err := runner(ctx, time.Minute, fmt.Sprintf(servodtoolDeviceUSBPathCMD, servoSerial))
 	if err != nil {
@@ -144,7 +138,7 @@ func GetRootServoPath(ctx context.Context, runner execs.Runner, servoSerial stri
 	return servoPath, nil
 }
 
-// Get the current usb devnum of servo.
+// GetServoUsbDevnum returns the current usb devnum of servo.
 func GetServoUsbDevnum(ctx context.Context, runner execs.Runner, servoSerial string) (string, error) {
 	rootServoPath, err := GetRootServoPath(ctx, runner, servoSerial)
 	if err != nil {
@@ -198,7 +192,7 @@ func convertVidPidToServoType(vidPid string) (string, error) {
 	return deviceType, nil
 }
 
-// Retrieve the servo topology consisting of root servo and servo
+// RetrieveServoTopology retries the servo topology consisting of root servo and servo
 // children on a host.
 func RetrieveServoTopology(ctx context.Context, runner execs.Runner, servoSerial string) (*tlw.ServoTopology, error) {
 	servoTopology := &tlw.ServoTopology{}
@@ -280,7 +274,7 @@ func IsItemGood(ctx context.Context, c *tlw.ServoTopologyItem) bool {
 	return c.Serial != "" && c.Type != "" && c.UsbHubPort != ""
 }
 
-// Create and return a slice of the servo devices in servo topology.
+// Devices creates and returns a slice of the servo devices in servo topology.
 // if there is a filteredBoard, then only return the slice of topology
 // item that contains that one filtered board.
 func Devices(c *tlw.ServoTopology, filteredBoard string) []*tlw.ServoTopologyItem {

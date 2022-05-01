@@ -7,13 +7,15 @@ package resultingester
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"time"
 
 	bbpb "go.chromium.org/luci/buildbucket/proto"
 	"go.chromium.org/luci/common/clock"
 	"go.chromium.org/luci/common/errors"
 	"go.chromium.org/luci/common/logging"
+	"go.chromium.org/luci/common/retry/transient"
+	"go.chromium.org/luci/common/tsmon/field"
+	"go.chromium.org/luci/common/tsmon/metric"
 	rdbbutil "go.chromium.org/luci/resultdb/pbutil"
 	rdbpb "go.chromium.org/luci/resultdb/proto/v1"
 	"go.chromium.org/luci/server"
@@ -32,6 +34,7 @@ import (
 	"infra/appengine/weetbix/internal/resultdb"
 	"infra/appengine/weetbix/internal/services/resultcollector"
 	"infra/appengine/weetbix/internal/tasks/taskspb"
+	"infra/appengine/weetbix/utils"
 )
 
 const (
@@ -53,6 +56,19 @@ const (
 // ResultDB, per build. The page size is 1000 results.
 const maxResultDBPages = 10
 
+var (
+	taskCounter = metric.NewCounter(
+		"weetbix/ingestion/task_completion",
+		"The number of completed Weetbix ingestion tasks, by build project and outcome.",
+		nil,
+		// The LUCI Project.
+		field.String("project"),
+		// "success", "failed_validation",
+		// "ignored_no_bb_access", "ignored_no_project_config",
+		// "ignored_cq_dry_run", "ignored_no_invocation".
+		field.String("outcome"))
+)
+
 // Options configures test result ingestion.
 type Options struct {
 }
@@ -67,9 +83,6 @@ var resultIngestion = tq.RegisterTaskClass(tq.TaskClass{
 	Queue:     resultIngestionQueue,
 	Kind:      tq.Transactional,
 })
-
-// realmProjectRe extracts the LUCI project name from a LUCI Realm.
-var realmProjectRe = regexp.MustCompile(`^([a-z0-9\-_]{1,40}):.+$`)
 
 // RegisterTaskHandler registers the handler for result ingestion tasks.
 func RegisterTaskHandler(srv *server.Server) error {
@@ -101,14 +114,30 @@ func RegisterTaskHandler(srv *server.Server) error {
 // Schedule enqueues a task to ingest test results from a build.
 func Schedule(ctx context.Context, task *taskspb.IngestTestResults) {
 	tq.MustAddTask(ctx, &tq.Task{
-		Title:   fmt.Sprintf("%s-%d", task.Build.Host, task.Build.Id),
+		Title:   fmt.Sprintf("%s-%s-%d", task.Build.Project, task.Build.Host, task.Build.Id),
 		Payload: task,
 	})
 }
 
 func (i *resultIngester) ingestTestResults(ctx context.Context, payload *taskspb.IngestTestResults) error {
 	if err := validateRequest(ctx, payload); err != nil {
-		return err
+		project := "(unknown)"
+		if payload.Build != nil && payload.Build.Project != "" {
+			project = payload.Build.Project
+		}
+		taskCounter.Add(ctx, 1, project, "failed_validation")
+		return tq.Fatal.Apply(err)
+	}
+
+	if _, err := config.Project(ctx, payload.Build.Project); err != nil {
+		if err == config.NotExistsErr {
+			// Project not configured in Weetbix, ignore it.
+			taskCounter.Add(ctx, 1, payload.Build.Project, "ignored_no_project_config")
+			return nil
+		} else {
+			// Transient error.
+			return transient.Tag.Apply(errors.Annotate(err, "get project config").Err())
+		}
 	}
 
 	// Buildbucket build only has builder, infra.resultdb, status populated.
@@ -116,26 +145,20 @@ func (i *resultIngester) ingestTestResults(ctx context.Context, payload *taskspb
 	code := status.Code(err)
 	if code == codes.NotFound {
 		// Build not found, end the task gracefully.
-		logging.Warningf(ctx, "Buildbucket build %d not found (or Weetbix does not have access to read it).", payload.Build.Id)
+		logging.Warningf(ctx, "Buildbucket build %s/%d for project %s not found (or Weetbix does not have access to read it).",
+			payload.Build.Host, payload.Build.Id, payload.Build.Project)
+		taskCounter.Add(ctx, 1, payload.Build.Project, "ignored_no_bb_access")
 		return nil
 	}
 	if err != nil {
 		return err
 	}
 
-	if _, err := config.Project(ctx, b.Builder.Project); err != nil {
-		if err == config.NotExistsErr {
-			// Project not configured in Weetbix, ignore it.
-			return nil
-		} else {
-			return errors.Annotate(err, "get project config").Err()
-		}
-	}
-
 	if b.Infra.GetResultdb().GetInvocation() == "" {
 		// Build does not have a ResultDB invocation to ingest.
 		logging.Debugf(ctx, "Skipping ingestion of build %s-%d because it has no ResultDB invocation.",
 			payload.Build.Host, payload.Build.Id)
+		taskCounter.Add(ctx, 1, payload.Build.Project, "ignored_no_invocation")
 		return nil
 	}
 	if payload.PresubmitRun != nil && payload.PresubmitRun.Mode != "FULL_RUN" {
@@ -143,6 +166,7 @@ func (i *resultIngester) ingestTestResults(ctx context.Context, payload *taskspb
 		// the analysis is not yet set up to deal with. Skip for now.
 		logging.Debugf(ctx, "Skipping ingestion of build %s-%d because it was a CQ Dry Run.",
 			payload.Build.Host, payload.Build.Id)
+		taskCounter.Add(ctx, 1, payload.Build.Project, "ignored_cq_dry_run")
 		return nil
 	}
 
@@ -151,20 +175,29 @@ func (i *resultIngester) ingestTestResults(ctx context.Context, payload *taskspb
 	builder := b.Builder.Builder
 	rc, err := resultdb.NewClient(ctx, rdbHost)
 	if err != nil {
-		return err
+		return transient.Tag.Apply(err)
 	}
 	inv, err := rc.GetInvocation(ctx, invName)
-	if err != nil {
-		return err
+	code = status.Code(err)
+	if code == codes.NotFound {
+		// Invocation not found, end the task gracefully.
+		logging.Warningf(ctx, "Invocation %s for project %s not found (or Weetbix does not have access to read it).",
+			invName, payload.Build.Project)
+		taskCounter.Add(ctx, 1, payload.Build.Project, "ignored_no_resultdb_access")
+		return nil
 	}
-	project := projectFromRealm(inv.Realm)
+	if err != nil {
+		return transient.Tag.Apply(err)
+	}
+
+	project, _ := utils.SplitRealm(inv.Realm)
 	if project == "" {
 		return fmt.Errorf("invocation has invalid realm: %q", inv.Realm)
 	}
 
 	realmCfg, err := config.Realm(ctx, inv.Realm)
 	if err != nil && err != config.RealmNotExistsErr {
-		return err
+		return transient.Tag.Apply(err)
 	}
 	ingestForTestVariantAnalysis := realmCfg != nil &&
 		shouldIngestForTestVariants(realmCfg, payload)
@@ -172,7 +205,8 @@ func (i *resultIngester) ingestTestResults(ctx context.Context, payload *taskspb
 	// Setup clustering ingestion.
 	invID, err := rdbbutil.ParseInvocationName(invName)
 	if err != nil {
-		return err
+		// This should never happen.
+		return transient.Tag.Apply(err)
 	}
 	opts := ingestion.Options{
 		Project:       project,
@@ -222,9 +256,16 @@ func (i *resultIngester) ingestTestResults(ctx context.Context, payload *taskspb
 		}
 		return nil
 	}
-	err = rc.QueryTestVariants(ctx, invName, f, maxResultDBPages)
+	req := &rdbpb.QueryTestVariantsRequest{
+		Invocations: []string{invName},
+		Predicate: &rdbpb.TestVariantPredicate{
+			Status: rdbpb.TestVariantStatus_UNEXPECTED_MASK,
+		},
+		PageSize: 1000,
+	}
+	err = rc.QueryTestVariants(ctx, req, f, maxResultDBPages)
 	if err != nil {
-		return err
+		return transient.Tag.Apply(err)
 	}
 	if err := clusterIngestion.Flush(ctx); err != nil {
 		return errors.Annotate(err, "ingesting for clustering").Err()
@@ -234,36 +275,29 @@ func (i *resultIngester) ingestTestResults(ctx context.Context, payload *taskspb
 		isPreSubmit := payload.PresubmitRun != nil
 		contributedToCLSubmission := payload.PresubmitRun != nil && payload.PresubmitRun.PresubmitRunSucceeded
 		if err = resultcollector.Schedule(ctx, inv, rdbHost, b.Builder.Builder, isPreSubmit, contributedToCLSubmission); err != nil {
-			return err
+			return transient.Tag.Apply(err)
 		}
 	}
 
+	taskCounter.Add(ctx, 1, project, "success")
 	return nil
 }
 
 func validateRequest(ctx context.Context, payload *taskspb.IngestTestResults) error {
 	if !payload.PartitionTime.IsValid() {
-		return tq.Fatal.Apply(errors.New("partition time must be specified and valid"))
+		return errors.New("partition time must be specified and valid")
 	}
 	t := payload.PartitionTime.AsTime()
 	now := clock.Now(ctx)
 	if t.Before(now.Add(ingestionEarliest)) {
-		return tq.Fatal.Apply(fmt.Errorf("partition time (%v) is too long ago", t))
+		return fmt.Errorf("partition time (%v) is too long ago", t)
 	} else if t.After(now.Add(ingestionLatest)) {
-		return tq.Fatal.Apply(fmt.Errorf("partition time (%v) is too far in the future", t))
+		return fmt.Errorf("partition time (%v) is too far in the future", t)
 	}
 	if payload.Build == nil {
-		return tq.Fatal.Apply(errors.New("build must be specified"))
+		return errors.New("build must be specified")
 	}
 	return nil
-}
-
-func projectFromRealm(realm string) string {
-	match := realmProjectRe.FindStringSubmatch(realm)
-	if match != nil {
-		return match[1]
-	}
-	return ""
 }
 
 func retrieveBuild(ctx context.Context, payload *taskspb.IngestTestResults) (*bbpb.Build, error) {

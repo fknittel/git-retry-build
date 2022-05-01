@@ -11,6 +11,7 @@ import (
 
 	"cloud.google.com/go/bigquery"
 	"go.chromium.org/luci/common/errors"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
 
 	"infra/appengine/weetbix/internal/bqutil"
@@ -18,6 +19,10 @@ import (
 	"infra/appengine/weetbix/internal/clustering/algorithms/rulesalgorithm"
 	configpb "infra/appengine/weetbix/internal/config/proto"
 )
+
+// ProjectNotExistsErr is returned if the dataset for the given project
+// does not exist.
+var ProjectNotExistsErr = errors.New("project does not exist in Weetbix or analysis is not yet available")
 
 // NotExistsErr is returned if there is no data for the specified cluster in
 // Weetbix.
@@ -57,6 +62,14 @@ type ClusterSummary struct {
 	// Top Test IDs included in the cluster, up to 5. Unless the cluster
 	// is empty, will always include at least one Test ID.
 	TopTestIDs []TopCount `json:"topTestIds"`
+}
+
+// ClusterPresubmitImpact represents a summary of the cluster's impact
+// on presubmit runs. Values are prior to any exoneration being applied.
+type ClusterPresubmitImpact struct {
+	ClusterID                       clustering.ClusterID
+	DistinctUserClTestRunsFailed12h int64
+	DistinctUserClTestRunsFailed1d  int64
 }
 
 // ExampleTestID returns an example Test ID that is part of the cluster, or
@@ -241,7 +254,7 @@ func (c *Client) ReadImpactfulClusters(ctx context.Context, opts ImpactfulCluste
 	}
 	it, err := job.Read(ctx)
 	if err != nil {
-		return nil, errors.Annotate(err, "obtain result iterator").Err()
+		return nil, handleJobReadError(err)
 	}
 	clusters := []*ClusterSummary{}
 	for {
@@ -256,6 +269,44 @@ func (c *Client) ReadImpactfulClusters(ctx context.Context, opts ImpactfulCluste
 		clusters = append(clusters, row)
 	}
 	return clusters, nil
+}
+
+func (c *Client) ReadClusterPresubmitImpact(ctx context.Context, project string, clusterIDs []clustering.ClusterID) ([]ClusterPresubmitImpact, error) {
+	dataset, err := bqutil.DatasetForProject(project)
+	if err != nil {
+		return nil, errors.Annotate(err, "getting dataset").Err()
+	}
+
+	q := c.client.Query(clusterPresubmitAnalysis)
+	q.DefaultDatasetID = dataset
+	q.Parameters = []bigquery.QueryParameter{
+		{
+			Name:  "clusterIDs",
+			Value: clusterIDs,
+		},
+	}
+
+	job, err := q.Run(ctx)
+	if err != nil {
+		return nil, errors.Annotate(err, "querying cluster presubmit impact").Err()
+	}
+	it, err := job.Read(ctx)
+	if err != nil {
+		return nil, handleJobReadError(err)
+	}
+	results := make([]ClusterPresubmitImpact, 0, len(clusterIDs))
+	for {
+		var row ClusterPresubmitImpact
+		err := it.Next(&row)
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, errors.Annotate(err, "obtain next presubmit impact row").Err()
+		}
+		results = append(results, row)
+	}
+	return results, nil
 }
 
 func valueOrDefault(value *int64, defaultValue int64) int64 {
@@ -339,7 +390,7 @@ func (c *Client) ReadCluster(ctx context.Context, luciProject string, clusterID 
 	}
 	it, err := job.Read(ctx)
 	if err != nil {
-		return nil, errors.Annotate(err, "obtain result iterator").Err()
+		return nil, handleJobReadError(err)
 	}
 	clusters := []*ClusterSummary{}
 	for {
@@ -360,19 +411,22 @@ func (c *Client) ReadCluster(ctx context.Context, luciProject string, clusterID 
 }
 
 type ClusterFailure struct {
-	Realm                       bigquery.NullString    `json:"realm"`
-	TestID                      bigquery.NullString    `json:"testId"`
-	Variant                     []*Variant             `json:"variant"`
-	PresubmitRunID              *PresubmitRunID        `json:"presubmitRunId"`
-	PresubmitRunOwner           bigquery.NullString    `json:"presubmitRunOwner"`
-	PresubmitRunCl              *Changelist            `json:"presubmitRunCl"`
-	PartitionTime               bigquery.NullTimestamp `json:"partitionTime"`
-	IsExonerated                bigquery.NullBool      `json:"isExonerated"`
-	IngestedInvocationID        bigquery.NullString    `json:"ingestedInvocationId"`
-	IsIngestedInvocationBlocked bigquery.NullBool      `json:"isIngestedInvocationBlocked"`
-	TestRunIds                  []bigquery.NullString  `json:"testRunIds"`
-	IsTestRunBlocked            bigquery.NullBool      `json:"isTestRunBlocked"`
-	Count                       int32                  `json:"count"`
+	Realm             bigquery.NullString    `json:"realm"`
+	TestID            bigquery.NullString    `json:"testId"`
+	Variant           []*Variant             `json:"variant"`
+	PresubmitRunID    *PresubmitRunID        `json:"presubmitRunId"`
+	PresubmitRunOwner bigquery.NullString    `json:"presubmitRunOwner"`
+	PresubmitRunCl    *Changelist            `json:"presubmitRunCl"`
+	PartitionTime     bigquery.NullTimestamp `json:"partitionTime"`
+	// ExonerationStatus defines the type of exoneration applied to the
+	// test result.
+	// One of NOT_EXONERATED, IMPLICIT, EXPLICIT or WEETBIX.
+	ExonerationStatus           bigquery.NullString   `json:"exonerationStatus"`
+	IngestedInvocationID        bigquery.NullString   `json:"ingestedInvocationId"`
+	IsIngestedInvocationBlocked bigquery.NullBool     `json:"isIngestedInvocationBlocked"`
+	TestRunIds                  []bigquery.NullString `json:"testRunIds"`
+	IsTestRunBlocked            bigquery.NullBool     `json:"isTestRunBlocked"`
+	Count                       int32                 `json:"count"`
 }
 
 type Variant struct {
@@ -421,7 +475,7 @@ func (c *Client) ReadClusterFailures(ctx context.Context, luciProject string, cl
 			ANY_VALUE(IF(ARRAY_LENGTH(r.presubmit_run_cls)>0,
 				r.presubmit_run_cls[OFFSET(0)], NULL)) as PresubmitRunCL,
 			r.partition_time as PartitionTime,
-			ANY_VALUE(r.exoneration_status) <> 'NOT_EXONERATED' as IsExonerated,
+			ANY_VALUE(r.exoneration_status) as ExonerationStatus,
 			r.ingested_invocation_id as IngestedInvocationID,
 			ANY_VALUE(r.is_ingested_invocation_blocked) as IsIngestedInvocationBlocked,
 			ARRAY_AGG(DISTINCT r.test_run_id) as TestRunIds,
@@ -450,7 +504,7 @@ func (c *Client) ReadClusterFailures(ctx context.Context, luciProject string, cl
 	}
 	it, err := job.Read(ctx)
 	if err != nil {
-		return nil, errors.Annotate(err, "obtain result iterator").Err()
+		return nil, handleJobReadError(err)
 	}
 	failures := []*ClusterFailure{}
 	for {
@@ -465,4 +519,14 @@ func (c *Client) ReadClusterFailures(ctx context.Context, luciProject string, cl
 		failures = append(failures, row)
 	}
 	return failures, nil
+}
+
+func handleJobReadError(err error) error {
+	switch e := err.(type) {
+	case *googleapi.Error:
+		if e.Code == 404 {
+			return ProjectNotExistsErr
+		}
+	}
+	return errors.Annotate(err, "obtain result iterator").Err()
 }

@@ -26,7 +26,7 @@ deps = {
 
   "infra/luci":
      "{chromium_git}/infra/luci/luci-py@" +
-     "bd51a9097394ef662736f9ec0ea6cfeb4c7bd09a",
+     "b07bef77efd5f4ee38e15bbaa48550d3ade221fa",
 
   # This unpinned dependency is present because it is used by the trybots for
   # the recipes-py repo; They check out infra with this at HEAD, and then apply
@@ -39,15 +39,15 @@ deps = {
 
   "infra/go/src/go.chromium.org/luci":
      "{chromium_git}/infra/luci/luci-go@" +
-     "01cb6ea19c643c03eb9fae45757b14c6f57ca343",
+     "1e9b21a788830beb56ff94e21a9501126bb08997",
 
   "infra/go/src/go.chromium.org/chromiumos/config":
      "{chromium_git}/chromiumos/config@" +
-     "dad32402130e08783ed01aa67c69bfbd7c2a3d61",
+     "e054fa693fdadcb1637b427c3bce249057f8d69a",
 
   "infra/go/src/go.chromium.org/chromiumos/infra/proto":
      "{chromium_git}/chromiumos/infra/proto@" +
-     "67347c16c08bd5670ec528b9dac9767ad4b692f8",
+     "2459bb8aaf5586af78b9fb85bd6e30c31675a979",
 
   # Appengine third_party DEPS
   "infra/appengine/third_party/bootstrap":

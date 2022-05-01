@@ -303,7 +303,7 @@ func getTimeout(ctx context.Context, cl Call) time.Duration {
 		timeout = maxRPCTimeout
 	}
 	if dl, ok := ctx.Deadline(); ok {
-		newTimeout := dl.Sub(time.Now())
+		newTimeout := time.Until(dl)
 		if newTimeout < timeout {
 			timeout = newTimeout
 		}
@@ -517,6 +517,9 @@ func (r *XMLRpc) Run(ctx context.Context, cl Call, out ...interface{}) error {
 
 	// Read body and unmarshal XML.
 	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return errors.Annotate(err, "read body").Err()
+	}
 	res := methodResponse{}
 	if err = xml.Unmarshal(bodyBytes, &res); err != nil {
 		return err

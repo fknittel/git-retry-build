@@ -9,10 +9,9 @@ import (
 	"testing"
 	"time"
 
+	. "github.com/smartystreets/goconvey/convey"
 	"go.chromium.org/luci/common/clock/testclock"
 	"go.chromium.org/luci/server/caching"
-
-	. "github.com/smartystreets/goconvey/convey"
 
 	"infra/appengine/weetbix/internal/bugs"
 	"infra/appengine/weetbix/internal/clustering/rules"
@@ -43,7 +42,7 @@ func TestRulesCache(t *testing.T) {
 				}
 			}
 			So(len(ruleset.ActiveRulesSorted), ShouldEqual, activeRules)
-			So(len(ruleset.ActiveRuleIDs), ShouldEqual, activeRules)
+			So(len(ruleset.ActiveRulesByID), ShouldEqual, activeRules)
 
 			sortedExpectedRules := sortRulesByPredicateLastUpdated(expectedRules)
 
@@ -60,8 +59,9 @@ func TestRulesCache(t *testing.T) {
 					So(a.Expr.String(), ShouldEqual, e.RuleDefinition)
 					actualRuleIndex++
 
-					_, ok := ruleset.ActiveRuleIDs[a.Rule.RuleID]
+					a2, ok := ruleset.ActiveRulesByID[a.Rule.RuleID]
 					So(ok, ShouldBeTrue)
+					So(a2.Rule, ShouldResemble, *e)
 				}
 			}
 			So(len(ruleset.ActiveRulesWithPredicateUpdatedSince(rules.StartingEpoch)), ShouldEqual, activeRules)
@@ -108,7 +108,11 @@ func TestRulesCache(t *testing.T) {
 					Predicates: reference,
 				}
 
-				Convey(`By Forced Eviction`, func() {
+				Convey(`By Strong Read`, func() {
+					test(StrongRead, rs, expectedRulesVersion)
+					test(StrongRead, rs, expectedRulesVersion)
+				})
+				Convey(`By Requesting Version`, func() {
 					test(expectedRulesVersion.Predicates, rs, expectedRulesVersion)
 				})
 				Convey(`By Cache Expiry`, func() {
@@ -175,7 +179,11 @@ func TestRulesCache(t *testing.T) {
 					Predicates: reference.Add(3 * time.Hour),
 				}
 
-				Convey(`By Forced Eviction`, func() {
+				Convey(`By Strong Read`, func() {
+					test(StrongRead, newRules, expectedRulesVersion)
+					test(StrongRead, newRules, expectedRulesVersion)
+				})
+				Convey(`By Requesting Version`, func() {
 					test(expectedRulesVersion.Predicates, newRules, expectedRulesVersion)
 				})
 				Convey(`By Cache Expiry`, func() {
@@ -226,6 +234,10 @@ func TestRulesCache(t *testing.T) {
 					Predicates: reference.Add(2 * time.Hour),
 				}
 
+				Convey(`By Strong Read`, func() {
+					test(StrongRead, newRules, expectedRulesVersion)
+					test(StrongRead, newRules, expectedRulesVersion)
+				})
 				Convey(`By Forced Eviction`, func() {
 					test(expectedRulesVersion.Predicates, newRules, expectedRulesVersion)
 				})

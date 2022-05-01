@@ -35,6 +35,7 @@ type auditRun struct {
 	runVerifyRpmConfig       bool
 
 	actions string
+	paris   bool
 }
 
 // AuditDutsCmd contains audit-duts command specification
@@ -55,6 +56,7 @@ var AuditDutsCmd = &subcommands.Command{
 		c.Flags.BoolVar(&c.runVerifyDutMacaddr, "dut-macaddr", false, "Run the verifier to check and cache mac address of DUT NIC to Servo.")
 		c.Flags.BoolVar(&c.runVerifyRpmConfig, "rpm-config", false, "Run the verifier to check and cache mac address of DUT NIC to Servo.")
 		c.Flags.IntVar(&c.expirationMins, "expiration-mins", 10, "The expiration minutes of the task request.")
+		c.Flags.BoolVar(&c.paris, "paris", false, "Use PARIS rather than legacy flow (dogfood).")
 		return c
 	},
 }
@@ -71,13 +73,16 @@ func (c *auditRun) Run(a subcommands.Application, args []string, env subcommands
 func (c *auditRun) innerRun(a subcommands.Application, args []string, env subcommands.Env) (err error) {
 	err = c.validateArgs(args)
 	if err != nil {
-		return err
+		return errors.Annotate(err, "audit dut").Err()
+	}
+	if c.paris {
+		return errors.Reason("audit duts: paris not yet supported in shivas for audit duts").Err()
 	}
 	ctx := cli.GetContext(a, c, env)
 	e := c.envFlags.Env()
 	creator, err := swarming.NewTaskCreator(ctx, &c.authFlags, e.SwarmingService)
 	if err != nil {
-		return err
+		return errors.Annotate(err, "audit dut").Err()
 	}
 	creator.LogdogService = e.LogdogService
 	successMap := make(map[string]*swarming.TaskInfo)
@@ -89,7 +94,7 @@ func (c *auditRun) innerRun(a subcommands.Application, args []string, env subcom
 		}
 		creator.GenerateLogdogTaskCode()
 		cmd.LogDogAnnotationURL = creator.LogdogURL()
-		task, err := creator.AuditTask(ctx, e.SwarmingServiceAccount, host, c.expirationMins*60, cmd.Args(), cmd.LogDogAnnotationURL)
+		task, err := creator.LegacyAuditTask(ctx, e.SwarmingServiceAccount, host, c.expirationMins*60, cmd.Args(), cmd.LogDogAnnotationURL)
 		if err != nil {
 			errorMap[host] = err
 		} else {
@@ -102,14 +107,14 @@ func (c *auditRun) innerRun(a subcommands.Application, args []string, env subcom
 
 func (c *auditRun) validateArgs(args []string) (err error) {
 	if c.expirationMins >= dayInMinutes {
-		return errors.Reason("Expiration minutes (%d minutes) cannot exceed 1 day [%d minutes]", c.expirationMins, dayInMinutes).Err()
+		return errors.Reason("validate args: expiration minutes (%d minutes) cannot exceed 1 day [%d minutes]", c.expirationMins, dayInMinutes).Err()
 	}
 	if len(args) == 0 {
-		return errors.Reason("At least one host has to provided").Err()
+		return errors.Reason("validate args: at least one host has to provided").Err()
 	}
 	c.actions, err = c.collectActions()
 	if err != nil {
-		return err
+		return errors.Annotate(err, "validate args").Err()
 	}
 	return nil
 }
@@ -138,7 +143,7 @@ func (c *auditRun) collectActions() (string, error) {
 		a = append(a, "verify-rpm-config")
 	}
 	if len(a) == 0 {
-		return "", errors.Reason("No actions was specified to run").Err()
+		return "", errors.Reason("collect actions: no actions was specified to run").Err()
 	}
 	return strings.Join(a, ","), nil
 }

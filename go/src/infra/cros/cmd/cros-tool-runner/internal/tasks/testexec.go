@@ -19,6 +19,7 @@ import (
 	"go.chromium.org/luci/common/cli"
 	"go.chromium.org/luci/common/errors"
 
+	"infra/cros/cmd/cros-tool-runner/internal/common"
 	"infra/cros/cmd/cros-tool-runner/internal/testexec"
 )
 
@@ -121,7 +122,9 @@ func readTestRequest(p string) (*api.CrosToolRunnerTestRequest, error) {
 	if err != nil {
 		return nil, errors.Annotate(err, "inner run: read test request %q", p).Err()
 	}
-	err = jsonpb.Unmarshal(r, in)
+
+	umrsh := common.JsonPbUnmarshaler()
+	err = umrsh.Unmarshal(r, in)
 	return in, errors.Annotate(err, "inner run: read test request %q", p).Err()
 }
 

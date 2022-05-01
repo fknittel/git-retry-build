@@ -72,11 +72,8 @@ Then use the following commands to deploy:
 ```
 cd frontend/ui
 npm run build
-gae.py upload --target-version ${USER} -A <appid>
+gae.py upload --target-version ${USER} -A chops-weetbix-dev
 ```
-
-For testing, you can use the same Google Cloud instance as the dev instance,
-this is chops-weetbix-dev.
 
 ### Dev and Prod Instances
 

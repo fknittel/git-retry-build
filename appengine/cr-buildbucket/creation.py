@@ -28,7 +28,6 @@ import bbutil
 import buildtags
 import config
 import experiments
-import flatten_swarmingcfg
 import errors
 import events
 import model
@@ -91,7 +90,7 @@ class BuildRequest(_BuildRequestBase):
       retry_of (int): value for model.Build.retry_of attribute.
       pubsub_callback_auth_token (str): value for
         model.Build.pubsub_callback.auth_token. Allowed iff r.notify is set.
-      override_builder_cfg: a function (project_config_pb2.Builder) => None
+      override_builder_cfg: a func (project_config_pb2.BuilderConfig) => None
         that may modify the config in-place before deriving a build from it.
     """
     assert schedule_build_request
@@ -238,7 +237,8 @@ class BuildRequest(_BuildRequestBase):
   def compute_experiments(sbr, builder_cfg, settings):
     """Returns a Dict[str, bool] of enabled/disabled experiments."""
     global_exps = []
-    ignored_exps = []
+    # not enable BBAGENT_DOWNLOAD_CIPD for swarmbucket or v1 related flow.
+    ignored_exps = [experiments.BBAGENT_DOWNLOAD_CIPD]
 
     for exp in settings.experiment.experiments:
       if exp.inactive:
@@ -385,7 +385,9 @@ class NewBuild(object):
 
   def __init__(self, request, builder_cfg):
     assert isinstance(request, BuildRequest)
-    assert isinstance(builder_cfg, (type(None), project_config_pb2.Builder))
+    assert isinstance(
+        builder_cfg, (type(None), project_config_pb2.BuilderConfig)
+    )
     self.request = request
     self.builder_cfg = builder_cfg
 
@@ -663,9 +665,22 @@ def _apply_global_settings(settings, build_proto):
     _add_configured_cache(build_proto, c)
 
 
+def _read_properties(recipe):
+  """Parses build properties from the recipe message.
+
+  Expects the message to be valid.
+  """
+  result = dict(p.split(':', 1) for p in recipe.properties)
+  for p in recipe.properties_j:  # pragma: no cover
+    k, v = p.split(':', 1)
+    parsed = json.loads(v)
+    result[k] = parsed
+  return result
+
+
 @ndb.tasklet
 def _apply_builder_config_async(builder_cfg, build_proto, exps):
-  """Applies project_config_pb2.Builder to a builds_pb2.Build."""
+  """Applies project_config_pb2.BuilderConfig to a builds_pb2.Build."""
   # Populate timeouts.
   build_proto.scheduling_timeout.seconds = builder_cfg.expiration_secs
   if not build_proto.scheduling_timeout.seconds:
@@ -694,9 +709,7 @@ def _apply_builder_config_async(builder_cfg, build_proto, exps):
     build_proto.exe.cipd_version = (
         builder_cfg.recipe.cipd_version or 'refs/heads/master'
     )
-    build_proto.input.properties.update(
-        flatten_swarmingcfg.read_properties(builder_cfg.recipe)
-    )
+    build_proto.input.properties.update(_read_properties(builder_cfg.recipe))
     build_proto.input.properties['recipe'] = builder_cfg.recipe.name
     build_proto.infra.recipe.cipd_package = builder_cfg.recipe.cipd_package
     build_proto.infra.recipe.name = builder_cfg.recipe.name

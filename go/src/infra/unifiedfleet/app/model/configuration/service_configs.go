@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	serviceConfigID string = "UFS"
-	lowerHex               = "000000"
+	serviceConfigID = "UFS"
+	lowerHex        = "000000"
 )
 
 // ServiceConfig we stored for ufs.
@@ -28,7 +28,7 @@ type ServiceConfig struct {
 	LastCheckedVMMacAddress string
 }
 
-// ServiceConfigsEntity is a datastore entity that records service-level configs.
+// ServiceConfigEntity is a datastore entity that records service-level configs.
 type ServiceConfigEntity struct {
 	// ServiceConfig is the datastore entity kind for service-level configs.
 	_kind      string        `gae:"$kind,ServiceConfig"`

@@ -132,21 +132,11 @@ def ComputeIssueEntryURL(mr, config):
     case. Otherewise it will be a fully qualified URL that includes some
     query string parameters.
   """
+  # TODO: remove the custom_issue_entry_url since its no longer
   if not config.custom_issue_entry_url:
     return '/p/%s/issues/entry' % (mr.project_name)
 
-  base_url = config.custom_issue_entry_url
-  sep = '&' if '?' in base_url else '?'
-  token = xsrf.GenerateToken(
-    mr.auth.user_id, '/p/%s%s%s' % (mr.project_name, urls.ISSUE_ENTRY, '.do'))
-  role_name = framework_helpers.GetRoleName(mr.auth.effective_ids, mr.project)
-
-  continue_url = urllib.quote(framework_helpers.FormatAbsoluteURL(
-      mr, urls.ISSUE_ENTRY + '.do'))
-
-  return '%s%stoken=%s&role=%s&continue=%s' % (
-      base_url, sep, urllib.quote(token),
-      urllib.quote(role_name or ''), continue_url)
+  return '/p/chromium/issues/wizard'
 
 
 def IssueListURL(mr, config, query_string=None):

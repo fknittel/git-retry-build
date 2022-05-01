@@ -1,0 +1,42 @@
+// Copyright 2021 The Chromium Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+syntax = "proto3";
+
+package chrome.rts;
+
+import "infra/rts/presubmit/eval/proto/results.proto";
+
+option go_package = "infra/rts/internal/chromium;chromium";
+
+// A test file used in Chromium.
+//
+// Used in an RTS model, in file "test-files.jsonl" encoded as JSON Lines
+// of TestFile protojson messages.
+message TestFile {
+  // Source-absolute path to the test file, e.g.
+  // "//chrome/renderer/autofill/password_autofill_agent_browsertest.cc".
+  string path = 1;
+
+  // Names of tests known to be defined in the the file.
+  // The names are native to the test framework, e.g.
+  // "PasswordAutofillAgentTest.NoMayUsePlaceholderAndPlaceholderOnForm".
+  repeated string test_names = 2;
+
+  // Test targets where the test file was observed, e.g. "browser_tests".
+  repeated string test_targets = 3;
+}
+
+// Configuration of a git-based selection strategy.
+message GitBasedStrategyConfig {
+  // Value for git.EdgeReader.ChangeLogDistanceFactor;
+  float change_log_distance_factor = 1;
+
+  // Value for git.EdgeReader.FileStructureDistanceFactor.
+  float file_structure_distance_factor = 2;
+
+  // Thresholds with change recalls and savings,
+  // ordered by change recall.
+  repeated chrome.rts.presubmit.eval.Threshold thresholds = 3;
+}

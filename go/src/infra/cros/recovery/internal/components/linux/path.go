@@ -28,7 +28,7 @@ func IsPathExist(ctx context.Context, run execs.Runner, path string) error {
 	return nil
 }
 
-// Different types of disk space used in the calculation for storage space.
+// SpaceType is different types of disk space used in the calculation for storage space.
 type SpaceType string
 
 const (
@@ -76,8 +76,7 @@ func PathOccupiedSpacePercentage(ctx context.Context, r execs.Runner, path strin
 	if err := IsPathExist(ctx, r, path); err != nil {
 		return -1, errors.Annotate(err, "path occupied space percentage: path: %q not exist", path).Err()
 	}
-	var cmd string
-	cmd = fmt.Sprintf(`df %s | tail -1`, path)
+	cmd := fmt.Sprintf(`df %s | tail -1`, path)
 	output, err := r(ctx, time.Minute, cmd)
 	if err != nil {
 		return -1, errors.Annotate(err, "path occupied space percentage").Err()

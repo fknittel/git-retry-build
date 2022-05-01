@@ -242,7 +242,6 @@ func TestFindImports(t *testing.T) {
 func TestSetVname(t *testing.T) {
 	t.Parallel()
 	Convey("Inject unit details", t, func() {
-		ctx := context.Background()
 		var vnameProto kpb.VName
 		vnameProtoRoot := "root"
 		vnameProto.Root = vnameProtoRoot
@@ -253,27 +252,26 @@ func TestSetVname(t *testing.T) {
 			p := "\\bad\\path"
 
 			So(func() {
-				setVnameForFile(ctx, &vnameProto, p, defaultCorpus)
+				setVnameForFile(&vnameProto, p, defaultCorpus)
 			}, ShouldPanic)
 		})
 
 		Convey("Filepath has special corpus", func() {
-			p := "src/third_party/depot_tools/win_toolchain/rest/of/path"
-			setVnameForFile(ctx, &vnameProto, p, defaultCorpus)
+			p := "third_party/depot_tools/win_toolchain/rest/of/path"
+			setVnameForFile(&vnameProto, p, defaultCorpus)
 
 			Convey("Should modify vnameProto with special/external settings", func() {
 				So(vnameProto.Path, ShouldEqual, "rest/of/path")
-				So(vnameProto.Root, ShouldEqual, "src/third_party/depot_tools/win_toolchain")
-				So(vnameProto.Corpus, ShouldEqual, "winsdk")
+				So(vnameProto.Root, ShouldEqual, "third_party/depot_tools/win_toolchain")
 			})
 		})
 
 		Convey("Filepath has no special corpus", func() {
 			p := "src/build/rest/of/path"
-			setVnameForFile(ctx, &vnameProto, p, defaultCorpus)
+			setVnameForFile(&vnameProto, p, defaultCorpus)
 
 			Convey("Should vnameProto with default settings", func() {
-				So(vnameProto.Path, ShouldEqual, p)
+				So(vnameProto.Path, ShouldEqual, "build/rest/of/path")
 				So(vnameProto.Root, ShouldEqual, vnameProtoRoot)
 				So(vnameProto.Corpus, ShouldEqual, defaultCorpus)
 			})
@@ -281,35 +279,6 @@ func TestSetVname(t *testing.T) {
 	})
 }
 
-func TestCorpusForFile(t *testing.T) {
-	t.Parallel()
-	Convey("Corpus details", t, func() {
-		ctx := context.Background()
-		defaultCorpus := "corpus"
-
-		Convey("Bad filepath", func() {
-			p := "\\bad\\path"
-
-			So(func() {
-				corpusForFile(ctx, p, defaultCorpus)
-			}, ShouldPanic)
-		})
-
-		Convey("Filepath has external corpus", func() {
-			p := "src/third_party/depot_tools/win_toolchain/rest/of/path"
-			Convey("Path should return external corpus", func() {
-				So(corpusForFile(ctx, p, defaultCorpus), ShouldEqual, "winsdk")
-			})
-		})
-
-		Convey("Filepath has no external corpus", func() {
-			p := "src/build/rest/of/path"
-			Convey("Path should return default corpus", func() {
-				So(corpusForFile(ctx, p, defaultCorpus), ShouldEqual, defaultCorpus)
-			})
-		})
-	})
-}
 func TestUnwantedWinArg(t *testing.T) {
 	t.Parallel()
 	Convey("Win args", t, func() {

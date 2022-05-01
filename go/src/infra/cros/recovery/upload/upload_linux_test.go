@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"go.chromium.org/luci/common/errors"
-	"go.chromium.org/luci/common/gcloud/gs"
 	lucigs "go.chromium.org/luci/common/gcloud/gs"
 )
 
@@ -28,8 +27,8 @@ type fakeWriter struct {
 	os.File
 }
 
-func (w *fakeInnerClient) Init(tempdir func() string) error {
-	if w.initialized {
+func (c *fakeInnerClient) Init(tempdir func() string) error {
+	if c.initialized {
 		return nil
 	}
 	path := ""
@@ -42,17 +41,17 @@ func (w *fakeInnerClient) Init(tempdir func() string) error {
 	} else {
 		path = tempdir()
 	}
-	w.baseDir = path
-	w.initialized = true
+	c.baseDir = path
+	c.initialized = true
 	return nil
 }
 
-func (w *fakeWriter) Count() int64 {
+func (c *fakeWriter) Count() int64 {
 	// Not _really_ implemented.
 	return 0
 }
 
-func (c *fakeInnerClient) NewWriter(p lucigs.Path) (gs.Writer, error) {
+func (c *fakeInnerClient) NewWriter(p lucigs.Path) (lucigs.Writer, error) {
 	path := filepath.Join(c.baseDir, string(p))
 	d := filepath.Dir(path)
 	if err := os.MkdirAll(d, 0b111_111_111); err != nil {

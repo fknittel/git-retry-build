@@ -12,6 +12,7 @@ import (
 
 	"go.chromium.org/luci/common/errors"
 
+	"infra/cros/dutstate"
 	"infra/cros/recovery/internal/execs"
 	"infra/cros/recovery/internal/log"
 )
@@ -79,7 +80,7 @@ const (
 func dutCheckModelExec(ctx context.Context, info *execs.ExecInfo) error {
 	argsMap := info.GetActionArgs(ctx)
 	invertResultsFlag := argsMap.AsBool(ctx, invertResultToken, false)
-	for _, m := range argsMap.AsStringSlice(ctx, stringValuesExtraArgToken) {
+	for _, m := range argsMap.AsStringSlice(ctx, stringValuesExtraArgToken, nil) {
 		m = strings.TrimSpace(m)
 		if strings.EqualFold(m, info.RunArgs.DUT.Model) {
 			msg := fmt.Sprintf("DUT Model %s found in the list of models in config", info.RunArgs.DUT.Model)
@@ -104,7 +105,7 @@ func dutCheckModelExec(ctx context.Context, info *execs.ExecInfo) error {
 func dutCheckBoardExec(ctx context.Context, info *execs.ExecInfo) error {
 	argsMap := info.GetActionArgs(ctx)
 	invertResultsFlag := argsMap.AsBool(ctx, invertResultToken, false)
-	for _, m := range argsMap.AsStringSlice(ctx, stringValuesExtraArgToken) {
+	for _, m := range argsMap.AsStringSlice(ctx, stringValuesExtraArgToken, nil) {
 		m = strings.TrimSpace(m)
 		if strings.EqualFold(m, info.RunArgs.DUT.Board) {
 			msg := fmt.Sprintf("DUT Board %s found in the list of boards in config", info.RunArgs.DUT.Model)
@@ -197,6 +198,20 @@ func regexNameMatchExec(ctx context.Context, info *execs.ExecInfo) error {
 	return nil
 }
 
+// setDutStateExec sets the state of the DUT to the value passed in
+// the action arguments.
+func setDutStateExec(ctx context.Context, info *execs.ExecInfo) error {
+	args := info.GetActionArgs(ctx)
+	newState := strings.ToUpper(args.AsString(ctx, "state", ""))
+	if newState == "" {
+		return errors.Reason("set dut state: state is not provided").Err()
+	}
+	log.Debugf(ctx, "Previous dut state: %s", info.RunArgs.DUT.State)
+	info.RunArgs.DUT.State = dutstate.State(newState)
+	log.Infof(ctx, "Set dut state to be: %s", newState)
+	return nil
+}
+
 func init() {
 	execs.Register("dut_servo_host_present", servoHostPresentExec)
 	execs.Register("dut_has_name", hasDutNameActionExec)
@@ -212,4 +227,5 @@ func init() {
 	execs.Register("dut_has_battery", hasBatteryExec)
 	execs.Register("dut_has_hwid", hasDutHwidExec)
 	execs.Register("dut_has_serial_number", hasDutSerialNumberExec)
+	execs.Register("dut_set_state", setDutStateExec)
 }

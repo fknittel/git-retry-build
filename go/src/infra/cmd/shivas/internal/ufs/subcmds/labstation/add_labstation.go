@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/maruel/subcommands"
 	"go.chromium.org/luci/auth/client/authcli"
 	"go.chromium.org/luci/common/cli"
@@ -76,7 +77,7 @@ var AddLabstationCmd = &subcommands.Command{
 		c.Flags.StringVar(&c.board, "board", "", "board the device is based on")
 		c.Flags.StringVar(&c.rack, "rack", "", "rack that the labstation is on")
 		c.Flags.StringVar(&c.zone, "zone", "", "zone that the labstation is on. "+cmdhelp.ZoneFilterHelpText)
-		c.Flags.BoolVar(&c.paris, "paris", false, "use paris for deployment")
+		c.Flags.BoolVar(&c.paris, "paris", true, "use paris flow for deployment")
 		return c
 	},
 }
@@ -174,12 +175,14 @@ func (c *addLabstation) innerRun(a subcommands.Application, args []string, env s
 	})
 
 	var bbClient buildbucket.Client
+	var sessionTag string
 	if c.paris {
 		var cErr error
 		bbClient, cErr = createBBClient(ctx, c.authFlags)
 		if cErr != nil {
 			return cErr
 		}
+		sessionTag = fmt.Sprintf("admin-session:%s", uuid.New().String())
 	}
 
 	for _, params := range deployParams {
@@ -190,8 +193,13 @@ func (c *addLabstation) innerRun(a subcommands.Application, args []string, env s
 		err := c.addLabstationToUFS(ctx, ic, params)
 		resTable.RecordResult(ufsOp, params.Labstation.GetHostname(), err)
 		if err == nil {
+			var dErr error
 			// Deploy and record result.
-			dErr := c.createLabstationDeployTask(ctx, tc, bbClient, params.Labstation, e, params.Labstation.GetHostname())
+			if c.paris {
+				dErr = utils.ScheduleDeployTask(ctx, bbClient, e, params.Labstation.GetHostname(), sessionTag)
+			} else {
+				dErr = c.createLabstationDeployTask(ctx, tc, params.Labstation, e)
+			}
 			resTable.RecordResult(swarmingOp, params.Labstation.GetHostname(), dErr)
 		} else {
 			// Record deploy task skip.
@@ -200,7 +208,13 @@ func (c *addLabstation) innerRun(a subcommands.Application, args []string, env s
 	}
 	// Print session URL if atleast one of the tasks was deployed.
 	if resTable.IsSuccessForAny(swarmingOp) {
-		fmt.Fprintf(a.GetOut(), "\nBatch tasks URL: %s\n\n", tc.SessionTasksURL())
+		var link string
+		if c.paris {
+			link = utils.TasksBatchLink(e.SwarmingService, sessionTag)
+		} else {
+			link = tc.SessionTasksURL()
+		}
+		fmt.Printf("\nBatch tasks URL: %s\n\n", link)
 	}
 
 	fmt.Println("\nSummary of operations:")
@@ -339,16 +353,12 @@ func (c *addLabstation) addLabstationToUFS(ctx context.Context, ic ufsAPI.FleetC
 }
 
 // CreateLabstationDeployTask creates a task using either the paris or legacy flow to deploy a labstation.
-func (c *addLabstation) createLabstationDeployTask(ctx context.Context, tc *swarming.TaskCreator, bbClient buildbucket.Client, lse *ufspb.MachineLSE, e site.Environment, host string) error {
-	if c.paris {
-		return utils.ScheduleDeployTask(ctx, bbClient, e, host)
-	} else {
-		task, dErr := tc.DeployDut(ctx, lse.Name, lse.GetMachines()[0], defaultSwarmingPool, c.deployTaskTimeout, c.deployActions, c.deployTags, nil)
-		if dErr != nil {
-			return errors.Annotate(dErr, "deploy labstation").Err()
-		}
-		fmt.Printf("Triggered Deploy task for Labstation %s. Follow the deploy job at %s\n", lse.GetName(), task.TaskURL)
+func (c *addLabstation) createLabstationDeployTask(ctx context.Context, tc *swarming.TaskCreator, lse *ufspb.MachineLSE, e site.Environment) error {
+	task, dErr := tc.DeployDut(ctx, lse.Name, lse.GetMachines()[0], defaultSwarmingPool, c.deployTaskTimeout, c.deployActions, c.deployTags, nil)
+	if dErr != nil {
+		return errors.Annotate(dErr, "deploy labstation").Err()
 	}
+	fmt.Printf("Triggered Deploy task for Labstation %s. Follow the deploy job at %s\n", lse.GetName(), task.TaskURL)
 	return nil
 }
 

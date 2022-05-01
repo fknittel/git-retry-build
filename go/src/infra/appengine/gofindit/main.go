@@ -12,6 +12,7 @@ import (
 	"infra/appengine/gofindit/compilefailureanalysis"
 	"infra/appengine/gofindit/model"
 	gfipb "infra/appengine/gofindit/proto"
+	"infra/appengine/gofindit/pubsub"
 	gfis "infra/appengine/gofindit/server"
 	"net/http"
 
@@ -22,6 +23,7 @@ import (
 	"go.chromium.org/luci/gae/service/datastore"
 	"go.chromium.org/luci/server"
 	"go.chromium.org/luci/server/auth"
+	"go.chromium.org/luci/server/auth/openid"
 	"go.chromium.org/luci/server/encryptedcookies"
 	"go.chromium.org/luci/server/templates"
 
@@ -126,6 +128,23 @@ func main() {
 		srv.Routes.GET("/", mwc, func(c *router.Context) {
 			text := fmt.Sprintf("You are logged in as %s", auth.CurrentUser(c.Context).Identity.Email())
 			c.Writer.Write([]byte(text))
+		})
+
+		// Pubsub handler
+		pubsubMwc := router.NewMiddlewareChain(
+			auth.Authenticate(&openid.GoogleIDTokenAuthMethod{
+				AudienceCheck: openid.AudienceMatchesHost,
+			}),
+		)
+		pusherID := identity.Identity(fmt.Sprintf("user:buildbucket-pubsub@%s.iam.gserviceaccount.com", srv.Options.CloudProject))
+
+		srv.Routes.POST("/_ah/push-handlers/buildbucket", pubsubMwc, func(ctx *router.Context) {
+			if got := auth.CurrentIdentity(ctx.Context); got != pusherID {
+				logging.Errorf(ctx.Context, "Expecting ID token of %q, got %q", pusherID, got)
+				ctx.Writer.WriteHeader(http.StatusForbidden)
+			} else {
+				pubsub.BuildbucketPubSubHandler(ctx)
+			}
 		})
 
 		// Installs PRPC service.

@@ -121,7 +121,7 @@ type SetApInfoByServoRequest struct {
 	// Force extract AP from the DUT.
 	ForceExtractAPFile bool
 	UpdateGBBFlags     bool
-	// GBB flags value need to be set to system.
+	// GBB flags value need to be set to AP.
 	// Example: 0x18
 	GBBFlags string
 }
@@ -172,6 +172,9 @@ type InstallFwFromFwImageRequest struct {
 	UpdateEC bool
 	// Specify that Update AP is is requested.
 	UpdateAP bool
+	// GBB flags value need to be set to AP.
+	// Example: 0x18
+	GBBFlags string
 }
 
 // InstallFwFromFwImage updates EC/AP on the DUT by servo from fw-image.
@@ -226,7 +229,7 @@ func InstallFwFromFwImage(ctx context.Context, req *InstallFwFromFwImageRequest,
 			return errors.Annotate(err, "install fw from fw-image").Err()
 		}
 		log.Debugf("Start program AP image %q", apImage)
-		if err := p.ProgramAP(ctx, apImage, ""); err != nil {
+		if err := p.ProgramAP(ctx, apImage, req.GBBFlags); err != nil {
 			return errors.Annotate(err, "install fw from fw-image").Err()
 		}
 		log.Infof("Finished program AP image %q", apImage)
@@ -242,6 +245,10 @@ func extractECImage(ctx context.Context, tarballPath string, run components.Runn
 	destDir := filepath.Join(filepath.Dir(tarballPath), "EC")
 	candidatesFiles := []string{
 		fmt.Sprintf("%s/ec.bin", model),
+	}
+	// TODO(b/226402941): Read existing ec image name using futility.
+	if model == "dragonair" {
+		candidatesFiles = append(candidatesFiles, "dratini/ec.bin")
 	}
 	if servod != nil {
 		fwBoard, err := servo.GetString(ctx, servod, "ec_board")
@@ -283,6 +290,10 @@ func extractAPImage(ctx context.Context, tarballPath string, run components.Runn
 	candidatesFiles := []string{
 		fmt.Sprintf("image-%s.bin", model),
 	}
+	// TODO(b/226402941): Read existing ec image name using futility.
+	if model == "dragonair" {
+		candidatesFiles = append(candidatesFiles, "image-dratini.bin")
+	}
 	if servod != nil {
 		fwBoard, err := servo.GetString(ctx, servod, "ec_board")
 		if err != nil {
@@ -321,12 +332,13 @@ func extractFromTarball(ctx context.Context, tarballPath, destDirPath string, ca
 	// Generate a list of all tarball files
 	tarballFiles := make(map[string]bool, 50)
 	cmd := fmt.Sprintf(tarballListTheFileGlob, tarballPath, strings.Join(candidates, " "))
-	if out, err := run(ctx, extractFileTimeout, cmd); err != nil {
-		return "", errors.Annotate(err, "extract from tarball").Err()
-	} else {
-		for _, fn := range strings.Split(out, "\n") {
-			tarballFiles[fn] = true
-		}
+	out, err := run(ctx, extractFileTimeout, cmd)
+	if err != nil {
+		log.Debugf("Fail with error: %s", err)
+	}
+	log.Debugf("Found candidates: %q", out)
+	for _, fn := range strings.Split(out, "\n") {
+		tarballFiles[fn] = true
 	}
 	// Check if image candidates are in the list of tarball files.
 	for _, cf := range candidates {
@@ -338,6 +350,7 @@ func extractFromTarball(ctx context.Context, tarballPath, destDirPath string, ca
 		if _, err := run(ctx, extractFileTimeout, cmd); err != nil {
 			log.Debugf("Extract from tarball: candidate %q fail to be extracted from tarball.", cf)
 		} else {
+			log.Infof("Extract from tarball: candidate file %q extracted.", cf)
 			return cf, nil
 		}
 	}

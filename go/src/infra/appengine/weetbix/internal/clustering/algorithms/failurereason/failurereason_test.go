@@ -18,7 +18,11 @@ import (
 
 func TestAlgorithm(t *testing.T) {
 	cfgpb := &configpb.ProjectConfig{}
-
+	Convey(`Name`, t, func() {
+		// Algorithm name should be valid.
+		a := &Algorithm{}
+		So(clustering.AlgorithmRe.MatchString(a.Name()), ShouldBeTrue)
+	})
 	Convey(`Cluster`, t, func() {
 		a := &Algorithm{}
 		cfg, err := compiledcfg.NewConfig(cfgpb)
@@ -92,6 +96,16 @@ func TestAlgorithm(t *testing.T) {
 				Reason: &pb.FailureReason{PrimaryErrorMessage: `_%"'+[]|` + "\u0000\r\n\v\u202E\u2066 AdafdxAAD17917+/="},
 			}
 			test(failure, `reason LIKE "\\_\\%\"'+[]|\x00\r\n\v\u202e\u2066 %"`)
+		})
+		Convey(`Multiline`, func() {
+			failure := &clustering.Failure{
+				Reason: &pb.FailureReason{
+					// Previously "ce\n ... Ac" matched the hexadecimal format
+					// for hexadecimal strings of 16 characters or more.
+					PrimaryErrorMessage: "Expected: to be called once\n          Actual: never called",
+				},
+			}
+			test(failure, `reason LIKE "Expected: to be called once\n          Actual: never called"`)
 		})
 	})
 	Convey(`Cluster Title`, t, func() {

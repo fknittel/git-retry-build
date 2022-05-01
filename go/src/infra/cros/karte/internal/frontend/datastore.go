@@ -20,6 +20,7 @@ import (
 	"infra/cros/karte/internal/datastore"
 	"infra/cros/karte/internal/errors"
 	"infra/cros/karte/internal/filterexp"
+	"infra/cros/karte/internal/idserialize"
 	"infra/cros/karte/internal/scalars"
 )
 
@@ -184,8 +185,46 @@ type ActionEntitiesQuery struct {
 	Query *datastore.Query
 }
 
+// ActionQueryAncillaryData returns ancillary data computed as part of advancing through
+// an action entities query.
+//
+// Currently, we return the biggest (earliest) and smallest (latest) version seen.
+type ActionQueryAncillaryData struct {
+	BiggestVersion  string
+	SmallestVersion string
+}
+
+// minVersion computes the minimum of two Karte version strings lexicographically.
+func minVersion(a string, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	if a <= b {
+		return a
+	}
+	return b
+}
+
+// maxVersion computes the maximum of two Karte version strings lexicographically.
+func maxVersion(a string, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	if a <= b {
+		return b
+	}
+	return a
+}
+
 // Next takes a batch size and returns the next batch of action entities from a query.
-func (q *ActionEntitiesQuery) Next(ctx context.Context, batchSize int32) ([]*ActionEntity, error) {
+func (q *ActionEntitiesQuery) Next(ctx context.Context, batchSize int32) ([]*ActionEntity, ActionQueryAncillaryData, error) {
+	var d ActionQueryAncillaryData
 	if batchSize == 0 {
 		batchSize = defaultBatchSize
 		logging.Debugf(ctx, "applied default batch size %d\n", defaultBatchSize)
@@ -196,13 +235,17 @@ func (q *ActionEntitiesQuery) Next(ctx context.Context, batchSize int32) ([]*Act
 	if q.Token != "" {
 		cursor, err := datastore.DecodeCursor(ctx, q.Token)
 		if err != nil {
-			return nil, errors.Annotate(err, "next action entity").Err()
+			return nil, ActionQueryAncillaryData{}, errors.Annotate(err, "next action entity: decoding cursor").Err()
 		}
 		rootedQuery = q.Query.Start(cursor)
 	}
 	rootedQuery = rootedQuery.Limit(batchSize)
 	var entities []*ActionEntity
 	err := datastore.Run(ctx, rootedQuery, func(ent *ActionEntity, cb datastore.CursorCB) error {
+		// Record the ancillary info! What versions did we see?
+		version := idserialize.GetIDVersion(ent.ID)
+		d.SmallestVersion = minVersion(d.SmallestVersion, version)
+		d.BiggestVersion = maxVersion(d.BiggestVersion, version)
 		entities = append(entities, ent)
 		// This inequality is weak because this block must run on the last iteration
 		// when the query is successful.
@@ -217,11 +260,12 @@ func (q *ActionEntitiesQuery) Next(ctx context.Context, batchSize int32) ([]*Act
 		}
 		return nil
 	})
+	logging.Infof(ctx, "Version range for batch %v", d)
 	if err != nil {
-		return nil, errors.Annotate(err, "next action entity").Err()
+		return nil, d, errors.Annotate(err, "next action entity: after running query").Err()
 	}
 	q.Token = nextToken
-	return entities, nil
+	return entities, d, nil
 }
 
 // newActionEntitiesQuery makes an action entities query that starts at the position implied
@@ -243,6 +287,33 @@ func newActionEntitiesQuery(token string, filter string) (*ActionEntitiesQuery, 
 	return &ActionEntitiesQuery{
 		Token: token,
 		Query: q,
+	}, nil
+}
+
+// newActionNameRangeQuery takes a beginning name and an end name and produces a query.
+//
+// This query will apply to names strictly in the range [begin, end).
+func newActionNameRangeQuery(begin idserialize.IDInfo, end idserialize.IDInfo) (*ActionEntitiesQuery, error) {
+	q := datastore.NewQuery(ActionKind)
+	// TODO(gregorynisbet): We can't have multiple inequality constraints in datastore, therefore we filter
+	//                      based on the receive time alone and ignore the name (which is based on the time).
+	//
+	// In the future, consider changing this strategy to take the start and end versions (say "zzzz" and "zzzx" for concreteness)
+	// And have this produce multiple queries (one for "zzzz", one for "zzzy", and one for "zzzx").
+	bTime := begin.Time()
+	eTime := end.Time()
+	// The datastore query will actually reject invalid arguments on its own, but we can give the user
+	// a better error message if we check the arguments ourselves.
+	switch {
+	case bTime.After(eTime):
+		return nil, errors.Reason("begin time %v is after end time %v", bTime, eTime).Err()
+	case bTime.Equal(eTime):
+		return nil, errors.Reason("rejecting likely erroneous call: begin time %q and end time are equal %q", bTime.String(), eTime.String()).Err()
+	}
+	q = q.Gte("receive_time", bTime).Lt("receive_time", eTime)
+	return &ActionEntitiesQuery{
+		Query: q,
+		Token: "",
 	}, nil
 }
 

@@ -28,7 +28,9 @@ const (
 	// it will be removed.  Thus, if this file exists, it indicates that
 	// we've tried and failed in a previous attempt to update.
 	// The file will be created every time a OS provision is kicked off.
-	provisionFailed = "/var/tmp/provision_failed"
+	// TODO(b/229309510): Remove when lab uses the latter marker.
+	provisionFailed       = "/var/tmp/provision_failed"
+	provisionFailedMarker = "/mnt/stateful_partition/unencrypted/provision_failed"
 
 	verificationTimeout = 120 * time.Second
 )
@@ -48,11 +50,11 @@ func (s *Server) provision(req *tls.ProvisionDutRequest, opName string) {
 
 	var p *provisionState
 	createProvisionFailedMarker := func() {
-		if p == nil {
+		if p == nil || p.c == nil {
 			return
 		}
-		if err := runCmd(p.c, "touch "+provisionFailed); err != nil {
-			log.Printf("Failed to create provisionFailed file, %s", err)
+		if err := runCmd(p.c, fmt.Sprintf("touch %s %s", provisionFailed, provisionFailedMarker)); err != nil {
+			log.Printf("createProvisionFailedMarker: Warning, failed to create provision failed marker, %s", err)
 		}
 	}
 
@@ -83,7 +85,11 @@ func (s *Server) provision(req *tls.ProvisionDutRequest, opName string) {
 	}
 
 	// Connect to the DUT.
-	disconnect, err := p.connect(ctx, addr)
+
+	initialSSHCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
+	disconnect, err := p.connect(initialSSHCtx, addr)
 	if err != nil {
 		setError(newOperationError(
 			codes.FailedPrecondition,
@@ -116,11 +122,16 @@ func (s *Server) provision(req *tls.ProvisionDutRequest, opName string) {
 				tls.ProvisionDutResponse_REASON_PROVISIONING_FAILED.String()))
 			return
 		}
-		disconnect, err = p.connect(ctx, addr)
+
+		// Shorten the time waiting for reboot to complete booting into the new OS.
+		rebootWaitCtx, cancel := context.WithTimeout(ctx, 300*time.Second)
+		defer cancel()
+
+		disconnect, err = p.connect(rebootWaitCtx, addr)
 		if err != nil {
 			setError(newOperationError(
 				codes.Aborted,
-				fmt.Sprintf("provision: failed to connect to DUT after OS provision, %s", err),
+				fmt.Sprintf("provision: failed to connect to DUT after OS provision, DUT might be rolling back, %s", err),
 				tls.ProvisionDutResponse_REASON_PROVISIONING_FAILED.String()))
 			return
 		}
@@ -184,7 +195,7 @@ func (s *Server) provision(req *tls.ProvisionDutRequest, opName string) {
 		if err != nil {
 			setError(newOperationError(
 				codes.Aborted,
-				fmt.Sprintf("provision: failed to connect to DUT after reboot, %s", err),
+				fmt.Sprintf("provision: failed to connect to DUT after stateful update and reboot, %s", err),
 				tls.ProvisionDutResponse_REASON_PROVISIONING_FAILED.String()))
 			return
 		}
@@ -283,8 +294,8 @@ func (s *Server) provision(req *tls.ProvisionDutRequest, opName string) {
 
 	// Remove the provisionFailed marker as provisioning stateful is skipped if OS
 	// is already on the requested version.
-	if err := runCmd(p.c, "rm "+provisionFailed); err != nil {
-		log.Printf("provision: Warning, failed to remove provisionFailed file, %s", err)
+	if err := runCmd(p.c, fmt.Sprintf("rm %s %s", provisionFailed, provisionFailedMarker)); err != nil {
+		log.Printf("provision: Warning, failed to remove provision failed marker, %s", err)
 	}
 
 	if bootID, err := getBootID(p.c); err != nil {

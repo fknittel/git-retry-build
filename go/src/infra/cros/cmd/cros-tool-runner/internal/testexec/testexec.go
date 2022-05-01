@@ -22,6 +22,7 @@ import (
 	"go.chromium.org/chromiumos/config/go/test/api"
 	"go.chromium.org/luci/common/errors"
 
+	"infra/cros/cmd/cros-tool-runner/internal/common"
 	"infra/cros/cmd/cros-tool-runner/internal/services"
 )
 
@@ -137,7 +138,9 @@ func readTestOutput(filePath string) (*api.CrosTestResponse, error) {
 		return nil, errors.Annotate(err, "read output").Err()
 	}
 	out := &api.CrosTestResponse{}
-	err = jsonpb.Unmarshal(r, out)
+
+	umrsh := common.JsonPbUnmarshaler()
+	err = umrsh.Unmarshal(r, out)
 	return out, errors.Annotate(err, "read output").Err()
 }
 
