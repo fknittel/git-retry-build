@@ -142,7 +142,7 @@ CREATE NULL_FILTERED INDEX VerdictsByTestVariantAndIngestionTime
 -- (Project, RuleBasedClusteringAlgorithm, RuleID), where
 -- RuleBasedClusteringAlgorithm is the algorithm name of the algorithm
 -- that clusters failures based on failure association rules (e.g.
--- 'rules-v1'), and (Project, RuleId) is the ID of the rule.
+-- 'rules-v2'), and (Project, RuleId) is the ID of the rule.
 CREATE TABLE FailureAssociationRules (
   -- The LUCI Project this bug belongs to.
   Project STRING(40) NOT NULL,
@@ -237,8 +237,8 @@ CREATE TABLE ClusteringState (
   -- The version of clustering algorithms used to cluster test results in this
   -- chunk. (This is a version over the set of algorithms, distinct from the
   -- version of a single algorithm, e.g.:
-  -- v1 -> {failurereason-v1}, v2 -> {failurereason-v1, testname-v1},
-  -- v3 -> {failurereason-v2, testname-v1}.)
+  -- v1 -> {reason-v1}, v2 -> {reason-v1, testname-v1},
+  -- v3 -> {reason-v2, testname-v1}.)
   AlgorithmsVersion INT64 NOT NULL,
   -- The version of project configuration used by algorithms to match test
   -- results in this chunk.
@@ -361,3 +361,171 @@ CREATE TABLE TQLeases (
     SerializedParts ARRAY<STRING(MAX)>,
     ExpiresAt TIMESTAMP NOT NULL,
 ) PRIMARY KEY (SectionID ASC, LeaseID ASC);
+
+-- Stores combined results of all runs of a test variant in a single invocation.
+CREATE TABLE TestVerdicts (
+  -- The LUCI Project this test verdict belongs to.
+  Project STRING(40) NOT NULL,
+
+  -- Unique identifier of the test.
+  -- This has the same value as luci.resultdb.v1.TestResult.test_id.
+  TestId STRING(MAX) NOT NULL,
+
+  -- Partition time, as determined by Weetbix ingestion. Start time of the
+  -- ingested build (for postsubmit results) or start time of the presubmit run
+  -- (for presubmit results). Defines date/time axis of test verdicts plotted
+  -- by date/time.
+  -- Including as part of Primary Key allows direct filtering of data for test
+  -- to last N days. This could be used to improve performance for tests with
+  -- many verdicts, or allow experimentation with keeping longer histories
+  -- (e.g. 120 days) without incurring performance penalty on time-windowed
+  -- queries.
+  PartitionTime TIMESTAMP NOT NULL,
+
+  -- A hex-encoded sha256 of concatenated "<key>:<value>\n" variant pairs.
+  -- Computed as hex(sha256(<concatenated_key_value_pairs>)[:8]),
+  -- where concatenated_key_value_pairs is the result of concatenating
+  -- variant pairs formatted as "<key>:<value>\n" in ascending key order.
+  -- Combination of Realm, TestId and VariantHash can identify a test variant.
+  VariantHash STRING(16) NOT NULL,
+
+  -- The invocation from which these test results were ingested.
+  -- This is the top-level invocation that was ingested.
+  IngestedInvocationId STRING(MAX) NOT NULL,
+
+  -- The realm of the test result, excluding project. 62 as ResultDB allows
+  -- at most 64 characters for the construction "<project>:<realm>" and project
+  -- must be at least one character.
+  SubRealm STRING(62) NOT NULL,
+
+  -- Derived information from the included test results.
+  -- Needed to compute the status of the verdict.
+  -- Status can be computed with the following code:
+  -- ```
+  -- WHEN IsExonerated THEN @exonerated
+  -- WHEN UnexpectedCount = 0 THEN @expected
+  -- WHEN SkippedCount = UnexpectedCount AND ExpectedCount = 0 THEN @unexpectedlySkipped
+  -- WHEN ExpectedCount = 0 THEN @unexpected
+  -- ELSE @flaky
+  -- ```
+
+  -- How many expected test results this verdict includes.
+  ExpectedCount INT64 NOT NULL,
+  -- How many unexpected test results this verdict includes.
+  UnexpectedCount INT64 NOT NULL,
+  -- How many skipped test results this verdict includes.
+  SkippedCount INT64 NOT NULL,
+  -- Whether the test verdict was exonerated.
+  IsExonerated BOOL NOT NULL,
+
+  -- How long a passed test execution took on average, in microseconds.
+  PassedAvgDurationUsec INT64,
+
+  -- Whether the invocation was part of a build that has unsubmitted changes
+  -- applied (such as Gerrit changes). (This includes unsubmitted changes
+  -- that were later submitted, e.g. because of a successful presubmit run.)
+  HasUnsubmittedChanges BOOL NOT NULL,
+
+  -- Whether the invocation was part of a build that has unsubmitted changes
+  -- applied (such as Gerrit changes) AND the changes were later submitted
+  -- because the build was part of a successful presubmit run.
+  HasContributedToClSubmission BOOL NOT NULL,
+) PRIMARY KEY(Project, TestId, PartitionTime, VariantHash, IngestedInvocationId, SubRealm)
+-- The following DDL query needs to be uncommented when applied to real Spanner
+-- instances. But it is commented out for Cloud Spanner Emulator:
+-- https://github.com/GoogleCloudPlatform/cloud-spanner-emulator/issues/32
+--, ROW DELETION POLICY (OLDER_THAN(PartitionTime, INTERVAL 90 DAY));
+
+-- Stores top-level invocations which were ingested.
+--
+-- TODO(crbug.com/1266759):
+-- This forms part of an experiment embedded into the design.
+-- If joining to this table is efficient, we may leave IsPresumbmit,
+-- realm, commit position data here and drop it off the TestVerdicts table.
+-- If not, we may decide to delete this table.
+CREATE TABLE IngestedInvocations (
+  -- The LUCI Project the invocation is a part of.
+  Project STRING(40) NOT NULL,
+
+  -- The (top-level) invocation which was ingested.
+  IngestedInvocationId STRING(MAX) NOT NULL,
+
+  -- The realm of the invocation, excluding project. 62 as ResultDB allows
+  -- at most 64 characters for the construction "<project>:<realm>" and project
+  -- must be at least one character.
+  SubRealm STRING(62) NOT NULL,
+
+  -- Partition time, as determined by Weetbix ingestion. Start time of the
+  -- ingested build (for postsubmit results) or start time of the presubmit run
+  -- (for presubmit results).
+  PartitionTime TIMESTAMP NOT NULL,
+
+  -- Whether the invocation was part of a build that has unsubmitted changes
+  -- applied (such as Gerrit changes). (This includes unsubmitted changes
+  -- that were later submitted, e.g. because of a successful presubmit run.)
+  HasUnsubmittedChanges BOOL NOT NULL,
+
+  -- Whether the invocation was part of a build that has unsubmitted changes
+  -- applied (such as Gerrit changes) AND the changes were later submitted
+  -- because the build was part of a successful presubmit run.
+  HasContributedToClSubmission BOOL NOT NULL,
+) PRIMARY KEY(Project, IngestedInvocationId)
+-- The following DDL query needs to be uncommented when applied to real Spanner
+-- instances. But it is commented out for Cloud Spanner Emulator:
+-- https://github.com/GoogleCloudPlatform/cloud-spanner-emulator/issues/32
+-- Use a slightly longer retention period to prevent the invocation being
+-- dropped before the associated TestVerdicts.
+--, ROW DELETION POLICY (OLDER_THAN(PartitionTime, INTERVAL 100 DAY));
+
+-- Serves three purposes:
+-- - Permits listing of distinct tests observed for a project, filtered by Realm.
+--   Tests may be duplicated many times in this table because there is one entry
+--   per test variant and realm. If this creates performance issues we can
+--   create a table with only distinct TestId entries at the cost of some
+--   additional complexity.
+--
+-- - Permits listing of distinct variants observed for a test in a project,
+--   filtered by Realm.
+--
+-- - Provides a mapping back from VariantHash to variant.
+--
+-- TODO(crbug.com/1266759):
+-- UniqueTestVariants table in ResultDB will be superseded by this table and
+-- will need to be deleted.
+CREATE TABLE TestVariantRealms (
+  -- The LUCI Project in which the variant was observed.
+  Project STRING(40) NOT NULL,
+
+  -- Unique identifier of the test from which the variant was observed,
+  -- This has the same value as luci.resultdb.v1.TestResult.test_id.
+  TestId STRING(MAX) NOT NULL,
+
+  -- A hex-encoded sha256 of concatenated "<key>:<value>\n" variant pairs.
+  -- Computed as hex(sha256(<concatenated_key_value_pairs>)[:8]),
+  -- where concatenated_key_value_pairs is the result of concatenating
+  -- variant pairs formatted as "<key>:<value>\n" in ascending key order.
+  -- Combination of Realm, TestId and VariantHash can identify a test variant.
+  VariantHash STRING(16) NOT NULL,
+
+  -- The realm of the test result from which the variant was observed, excluding
+  -- project. 62 as ResultDB allows at most 64 characters for the construction
+  -- "<project>:<realm>" and project must be at least one character.
+  SubRealm STRING(62) NOT NULL,
+
+  -- key:value pairs to specify the way of running the test.
+  -- See also luci.resultdb.v1.TestResult.variant.
+  Variant ARRAY<STRING(MAX)>,
+
+  -- Other information about the test variant, like information from tags,
+  -- could be captured here, as is currently the case for AnalyzedTestVariants.
+  -- (e.g. test ownership).
+
+  -- Last (ingestion) time this test variant was observed in the realm.
+  -- This value may be out of date by up to 24 hours to allow for contention-
+  -- reducing strategies.
+  LastIngestionTime TIMESTAMP NOT NULL OPTIONS (allow_commit_timestamp=true),
+) PRIMARY KEY(Project, TestId, VariantHash, SubRealm)
+-- The following DDL query needs to be uncommented when applied to real Spanner
+-- instances. But it is commented out for Cloud Spanner Emulator:
+-- https://github.com/GoogleCloudPlatform/cloud-spanner-emulator/issues/32
+--, ROW DELETION POLICY (OLDER_THAN(LastIngestionTime, INTERVAL 90 DAY));

@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/golang/protobuf/jsonpb"
 	build_api "go.chromium.org/chromiumos/config/go/build/api"
 	"go.chromium.org/luci/auth"
 	"go.chromium.org/luci/auth/client/authcli"
@@ -29,7 +28,9 @@ func readContainersMetadata(p string) (*build_api.ContainerMetadata, error) {
 	if err != nil {
 		return nil, errors.Annotate(err, "read container metadata %q", p).Err()
 	}
-	err = jsonpb.Unmarshal(r, in)
+
+	umrsh := common.JsonPbUnmarshaler()
+	err = umrsh.Unmarshal(r, in)
 	return in, errors.Annotate(err, "read container metadata %q", p).Err()
 }
 

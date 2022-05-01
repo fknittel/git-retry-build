@@ -143,7 +143,6 @@ func TestIngestTestResults(t *testing.T) {
 		ctx = caching.WithEmptyProcessCache(ctx) // For failure association rules cache.
 		ctx, skdr := tq.TestingContext(ctx, nil)
 		ctx = memory.Use(ctx)
-		config.SetTestProjectConfig(ctx, createProjectsConfig())
 
 		chunkStore := chunkstore.NewFakeClient()
 		clusteredFailures := clusteredfailures.NewFakeClient()
@@ -155,8 +154,9 @@ func TestIngestTestResults(t *testing.T) {
 		Convey(`partition time`, func() {
 			payload := &taskspb.IngestTestResults{
 				Build: &ctrlpb.BuildResult{
-					Host: "host",
-					Id:   13131313,
+					Host:    "host",
+					Id:      13131313,
+					Project: "chromium",
 				},
 				PartitionTime: timestamppb.New(clock.Now(ctx).Add(-1 * time.Hour)),
 			}
@@ -230,8 +230,9 @@ func TestIngestTestResults(t *testing.T) {
 
 			payload := &taskspb.IngestTestResults{
 				Build: &ctrlpb.BuildResult{
-					Host: "host",
-					Id:   bID,
+					Host:    "host",
+					Id:      bID,
+					Project: "chromium",
 				},
 				PartitionTime: timestamppb.New(clock.Now(ctx).Add(-1 * time.Hour)),
 			}
@@ -266,7 +267,7 @@ func TestIngestTestResults(t *testing.T) {
 					TestId:      "ninja://test_known_flake",
 					VariantHash: "hash",
 					Status:      pb.AnalyzedTestVariantStatus_FLAKY,
-					Tags:        pbutil.StringPairs("test_name", "test_known_flake", "monorail_component", "Monorail>Component", "os", "Mac"),
+					Tags:        pbutil.StringPairs("monorail_component", "Monorail>Component", "os", "Mac", "test_name", "test_known_flake"),
 				},
 			}
 
@@ -362,29 +363,19 @@ func TestIngestTestResults(t *testing.T) {
 			So(actualClusteredFailures, ShouldResemble, expectedClusteredFailures)
 		})
 		Convey(`no project config`, func() {
+			config.SetTestProjectConfig(ctx, map[string]*configpb.ProjectConfig{})
+
 			ctl := gomock.NewController(t)
 			defer ctl.Finish()
 
 			mbc := buildbucket.NewMockedClient(ctx, ctl)
 			ctx = mbc.Ctx
 
-			bID := int64(87654321)
-			inv := "invocations/build-87654321"
-
-			request := &bbpb.GetBuildRequest{
-				Id: bID,
-				Mask: &bbpb.BuildMask{
-					Fields: &field_mask.FieldMask{
-						Paths: []string{"builder", "infra.resultdb", "status"},
-					},
-				},
-			}
-			mbc.GetBuild(request, mockedGetBuildRsp(inv))
-
 			payload := &taskspb.IngestTestResults{
 				Build: &ctrlpb.BuildResult{
-					Host: "host",
-					Id:   bID,
+					Host:    "host",
+					Id:      87654321,
+					Project: "chromium",
 				},
 				PartitionTime: timestamppb.New(clock.Now(ctx).Add(-1 * time.Hour)),
 			}

@@ -21,6 +21,7 @@ import (
 	"go.chromium.org/luci/common/errors"
 	"golang.org/x/sync/errgroup"
 
+	"infra/cros/cmd/cros-tool-runner/internal/common"
 	"infra/cros/cmd/cros-tool-runner/internal/provision"
 )
 
@@ -154,7 +155,9 @@ func readProvisionRequest(p string) (*api.CrosToolRunnerProvisionRequest, error)
 	if err != nil {
 		return nil, errors.Annotate(err, "read provision request %q", p).Err()
 	}
-	err = jsonpb.Unmarshal(r, in)
+
+	umrsh := common.JsonPbUnmarshaler()
+	err = umrsh.Unmarshal(r, in)
 	return in, errors.Annotate(err, "read provision request %q", p).Err()
 }
 

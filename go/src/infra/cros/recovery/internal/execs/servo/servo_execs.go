@@ -13,6 +13,7 @@ import (
 
 	"go.chromium.org/luci/common/errors"
 
+	components_cros "infra/cros/recovery/internal/components/cros"
 	"infra/cros/recovery/internal/components/servo"
 	"infra/cros/recovery/internal/execs"
 	"infra/cros/recovery/internal/execs/cros"
@@ -57,29 +58,13 @@ const (
 	// servod process is responsive.
 	servodHostCheckupCmd = "dut-control -p %d serialname"
 
-	// This is the threshold voltage value, and actual values lower
-	// than this indicate that DUT is not connected.
+	// This is the threshold voltage values between DUT and servo
+	// Bus voltage on ppdut5. Value can be:
+	//  - less than 500 - DUT is likely not connected
+	//  - between 500 and 4000 - unexpected value
+	//  - more than 4000 - DUT is likely connected
 	maxPPDut5MVWhenNotConnected = 500
-
-	// This token represents the command string that can be present in
-	// the extra arguments defined in config.
-	commandToken = "command"
-
-	// This token represents the string in config extra arguments that
-	// conveys the expected string value for a servod command.
-	stringValueExtraArgToken = "expected_string_value"
-
-	// This token represents the string in config extra arguments that
-	// conveys the expected int value for a servod command.
-	intValueExtraArgToken = "expected_int_value"
-
-	// This token represents the string in config extra arguments that
-	// conveys the expected floating-point value for a servod command.
-	floatValueExtraArgToken = "expected_float_value"
-
-	// This token represents the string in config extra arguments that
-	// conveys the expected boolean value for a servod command.
-	boolValueExtraArgToken = "expected_bool_value"
+	minPPDut5MVWhenConnected    = 4000
 )
 
 // servodInitActionExec init servod options and start servod on servo-host.
@@ -186,7 +171,7 @@ func runCheckOnHost(ctx context.Context, run execs.Runner, usbPath string, timeo
 func servoAuditUSBKeyExec(ctx context.Context, info *execs.ExecInfo) error {
 	dutUsb := ""
 	dutRunner := info.NewRunner(info.RunArgs.DUT.Name)
-	if cros.IsSSHable(ctx, dutRunner) == nil {
+	if components_cros.IsSSHable(ctx, dutRunner) == nil {
 		log.Debugf(ctx, "Servo Audit USB-Key Exec: %q is reachable through SSH", info.RunArgs.DUT.Name)
 		var err error = nil
 		dutUsb, err = GetUSBDrivePathOnDut(ctx, dutRunner, info.NewServod())
@@ -403,78 +388,67 @@ func servoLowPPDut5Exec(ctx context.Context, info *execs.ExecInfo) error {
 // value.
 func servoCheckServodControlExec(ctx context.Context, info *execs.ExecInfo) error {
 	argsMap := info.GetActionArgs(ctx)
-	command, ok := argsMap[commandToken]
-	log.Debugf(ctx, "Servo Check Servod Control Exec: %s ok :%t", commandToken, ok)
-	if !ok {
-		// It is a failure condition if an action invokes this exec,
-		// and does not specify the servod command.
-		return errors.Reason("servo check servod control exec: no command is mentioned for this action.").Err()
-	} else if len(command) == 0 {
-		return errors.Reason("servo check servod control exec: malformed (empty) command.").Err()
+	command := argsMap.AsString(ctx, "command", "")
+	if len(command) == 0 {
+		return errors.Reason("servo check servod control exec: command not provided").Err()
 	}
-	var expectedValue string
 	var compare func(ctx context.Context) error
 	// TODO (vkjoshi@): revisit the logic of implementations of the
 	// function 'compare', e.g., will it make sense to use a helper
 	// function for this?
-	if expectedValue, ok = argsMap[stringValueExtraArgToken]; ok {
+	const expectedStringKey = "expected_string_value"
+	const expectedIntKey = "expected_int_value"
+	const expectedFloatKey = "expected_float_value"
+	const expectedBoolKey = "expected_bool_value"
+	if argsMap.Has(expectedStringKey) {
+		expectedValue := argsMap.AsString(ctx, expectedStringKey, "")
 		controlValue, err := servodGetString(ctx, info.NewServod(), command)
 		if err != nil {
 			return errors.Annotate(err, "servo check servod control exec").Err()
 		}
 		compare = func(ctx context.Context) error {
-			log.Debugf(ctx, "Compare (String), expected value %q, actual value %q", expectedValue, controlValue)
+			log.Infof(ctx, "Compare (String), expected value %q, actual value %q", expectedValue, controlValue)
 			if controlValue != expectedValue {
-				log.Debugf(ctx, "Compare (String), expected value %q, actual value %q do not match.", expectedValue, controlValue)
 				return errors.Reason("compare (string): expected value %q, actual value %q do not match.", expectedValue, controlValue).Err()
 			}
 			return nil
 		}
-	} else if expectedValue, ok = argsMap[intValueExtraArgToken]; ok {
+	} else if argsMap.Has(expectedIntKey) {
+		expectedValue := argsMap.AsInt(ctx, expectedIntKey, 0)
 		controlValue, err := servodGetInt(ctx, info.NewServod(), command)
 		if err != nil {
 			return errors.Annotate(err, "servo check servod control exec").Err()
 		}
 		compare = func(ctx context.Context) error {
 			log.Debugf(ctx, "Compare (Int), expected value %s, actual value %d", expectedValue, controlValue)
-			expectedInt, err := strconv.Atoi(expectedValue)
-			if err != nil {
-				return errors.Annotate(err, "compare (int32)").Err()
-			}
-			if controlValue != int32(expectedInt) {
-				return errors.Reason("compare: expected value %d, actual value %d do not match", int32(expectedInt), controlValue).Err()
+			if controlValue != int32(expectedValue) {
+				return errors.Reason("compare: expected value %d, actual value %d do not match", int32(expectedValue), controlValue).Err()
 			}
 			return nil
 		}
-	} else if expectedValue, ok = argsMap[floatValueExtraArgToken]; ok {
+	} else if argsMap.Has(expectedFloatKey) {
+		expectedValue := argsMap.AsFloat64(ctx, expectedFloatKey, 0)
 		controlValue, err := servodGetDouble(ctx, info.NewServod(), command)
 		if err != nil {
 			return errors.Annotate(err, "servo check servod control exec").Err()
 		}
 		compare = func(ctx context.Context) error {
 			log.Debugf(ctx, "Compare (Double), expected value %s, actual value %f", expectedValue, controlValue)
-			expectedDouble, err := strconv.ParseFloat(expectedValue, 64)
-			if err != nil {
-				return errors.Annotate(err, "compare (float64)").Err()
-			}
-			if controlValue != expectedDouble {
-				return errors.Reason("compare: expected value %f, actual value %f do not match", expectedDouble, controlValue).Err()
+			if controlValue != expectedValue {
+				return errors.Reason("compare: expected value %f, actual value %f do not match", expectedValue, controlValue).Err()
 			}
 			return nil
 		}
-	} else if expectedValue, ok = argsMap[boolValueExtraArgToken]; ok {
+	} else if argsMap.Has(expectedBoolKey) {
+		expectedValue := argsMap.AsBool(ctx, expectedBoolKey, false)
 		controlValue, err := servodGetBool(ctx, info.NewServod(), command)
 		if err != nil {
 			return errors.Annotate(err, "servo check servod control exec").Err()
 		}
 		compare = func(ctx context.Context) error {
 			log.Debugf(ctx, "Compare (Bool), expected value %s, actual value %t", expectedValue, controlValue)
-			expectedBool, err := strconv.ParseBool(expectedValue)
-			if err != nil {
-				return errors.Annotate(err, "compare (int32)").Err()
-			}
-			if controlValue != expectedBool {
-				return errors.Reason("compare: expected value %t, actual value %t do not match", expectedBool, controlValue).Err()
+			if controlValue != expectedValue {
+				return errors.Reason("compare: expected value %t, actual value %t do not match", expectedValue, controlValue).Err()
 			}
 			return nil
 		}
@@ -644,30 +618,33 @@ func servoUpdateServoFirmwareExec(ctx context.Context, info *execs.ExecInfo) (er
 	if filteredServoBoard != "" {
 		log.Debugf(ctx, "Servo update servo firmware: Only updating board: %q's firmware", filteredServoBoard)
 	}
-	// Record fw flash time to karte.
-	action := &metrics.Action{
-		// TODO(@gregorynisbet): When karte' Search API is capable of taking in asset tag,
-		// change the query to use asset tag instead of using hostname.
-		Hostname:   info.RunArgs.DUT.Name,
-		ActionKind: metrics.ServoFwUpdateKind,
-		StartTime:  time.Now(),
-		Status:     metrics.ActionStatusSuccess,
-	}
-	if mErr := info.RunArgs.Metrics.Create(ctx, action); mErr != nil {
-		log.Debugf(ctx, "Servo update servo firmware: cannot create karte metrics: %s", mErr)
-	}
-	defer func() {
-		// Recoding servo fw update to Karte.
-		log.Debugf(ctx, "Updating servo firmware information in Karte.")
-		action.StopTime = time.Now()
-		if err != nil {
-			action.Status = metrics.ActionStatusFail
-			action.FailReason = err.Error()
+	startTime := time.Now()
+	if info.RunArgs.Metrics != nil {
+		// Record fw flash time to karte.
+		action := &metrics.Action{
+			// TODO(@gregorynisbet): When karte' Search API is capable of taking in asset tag,
+			// change the query to use asset tag instead of using hostname.
+			Hostname:   info.RunArgs.DUT.Name,
+			ActionKind: metrics.ServoFwUpdateKind,
+			StartTime:  startTime,
+			Status:     metrics.ActionStatusSuccess,
 		}
-		if mErr := info.RunArgs.Metrics.Update(ctx, action); mErr != nil {
-			log.Debugf(ctx, "Servo update servo firmware: Metrics error: %s", mErr)
+		if mErr := info.RunArgs.Metrics.Create(ctx, action); mErr != nil {
+			log.Debugf(ctx, "Servo update servo firmware: cannot create karte metrics: %s", mErr)
 		}
-	}()
+		defer func() {
+			// Recoding servo fw update to Karte.
+			log.Debugf(ctx, "Updating servo firmware information in Karte.")
+			action.StopTime = time.Now()
+			if err != nil {
+				action.Status = metrics.ActionStatusFail
+				action.FailReason = err.Error()
+			}
+			if mErr := info.RunArgs.Metrics.Update(ctx, action); mErr != nil {
+				log.Debugf(ctx, "Servo update servo firmware: Metrics error: %s", mErr)
+			}
+		}()
+	}
 	run := info.NewRunner(info.RunArgs.DUT.ServoHost.Name)
 	if forceUpdate {
 		// If requested to update with force then first attempt will be with force
@@ -688,29 +665,31 @@ func servoUpdateServoFirmwareExec(ctx context.Context, info *execs.ExecInfo) (er
 		return errors.Reason("servo update servo firmware: the number of servo devices to update fw is 0").Err()
 	}
 	failDevices := UpdateDevicesServoFw(ctx, run, req, devicesToUpdate)
-	// Record every single servo device fw flash time as well as status to karte.
-	for _, device := range devicesToUpdate {
-		eachBoardAction := &metrics.Action{
-			// TODO(@gregorynisbet): When karte' Search API is capable of taking in asset tag,
-			// change the query to use asset tag instead of using hostname.
-			Hostname:   info.RunArgs.DUT.Name,
-			ActionKind: fmt.Sprintf(metrics.ServoEachDeviceFwUpdateKind, device.Type),
-			StartTime:  action.StartTime,
-			StopTime:   time.Now(),
-			Status:     metrics.ActionStatusSuccess,
-		}
-		var isDeviceUpdateFailed bool
-		for _, failDevice := range failDevices {
-			if failDevice.Type == device.Type {
-				isDeviceUpdateFailed = true
-				break
+	if info.RunArgs.Metrics != nil {
+		// Record every single servo device fw flash time as well as status to karte.
+		for _, device := range devicesToUpdate {
+			eachBoardAction := &metrics.Action{
+				// TODO(@gregorynisbet): When karte' Search API is capable of taking in asset tag,
+				// change the query to use asset tag instead of using hostname.
+				Hostname:   info.RunArgs.DUT.Name,
+				ActionKind: fmt.Sprintf(metrics.ServoEachDeviceFwUpdateKind, device.Type),
+				StartTime:  startTime,
+				StopTime:   time.Now(),
+				Status:     metrics.ActionStatusSuccess,
 			}
-		}
-		if isDeviceUpdateFailed {
-			eachBoardAction.Status = metrics.ActionStatusFail
-		}
-		if mErr := info.RunArgs.Metrics.Create(ctx, eachBoardAction); mErr != nil {
-			log.Debugf(ctx, "Servo update servo firmware: cannot create karte metrics: %s", mErr)
+			var isDeviceUpdateFailed bool
+			for _, failDevice := range failDevices {
+				if failDevice.Type == device.Type {
+					isDeviceUpdateFailed = true
+					break
+				}
+			}
+			if isDeviceUpdateFailed {
+				eachBoardAction.Status = metrics.ActionStatusFail
+			}
+			if mErr := info.RunArgs.Metrics.Create(ctx, eachBoardAction); mErr != nil {
+				log.Debugf(ctx, "Servo update servo firmware: cannot create karte metrics: %s", mErr)
+			}
 		}
 	}
 	if len(failDevices) != 0 {

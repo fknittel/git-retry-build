@@ -91,6 +91,7 @@ func TestRun(t *testing.T) {
 			project:            project,
 			analysisClient:     ac,
 			monorailClient:     mc,
+			enableBugUpdates:   true,
 			maxBugsFiledPerRun: 1,
 		}
 
@@ -123,6 +124,18 @@ func TestRun(t *testing.T) {
 
 			// No monorail issues.
 			So(f.Issues, ShouldBeNil)
+		})
+		Convey("With buganizer bugs", func() {
+			rs := []*rules.FailureAssociationRule{
+				rules.NewRule(1).WithProject(project).WithBug(bugs.BugID{
+					System: "buganizer", ID: "12345678",
+				}).Build(),
+			}
+			rules.SetRulesForTesting(ctx, rs)
+
+			// Bug filing should not encounter errors.
+			err = updateAnalysisAndBugsForProject(ctx, opts)
+			So(err, ShouldBeNil)
 		})
 		Convey("With a suggested cluster above impact thresold", func() {
 			sourceClusterID := reasonClusterID(compiledCfg, "Failed to connect to 100.1.1.99.")
@@ -292,6 +305,14 @@ func TestRun(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				expectCreate = true
+				test()
+			})
+			Convey("With bug updates disabled", func() {
+				suggestedClusters[1].Failures1d.ResidualPreWeetbix = 100
+
+				opts.enableBugUpdates = false
+
+				expectCreate = false
 				test()
 			})
 			Convey("Without re-clustering caught up to latest algorithms", func() {

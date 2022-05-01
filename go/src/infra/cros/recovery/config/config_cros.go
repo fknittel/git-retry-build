@@ -61,23 +61,30 @@ func crosClosePlan() *Plan {
 			"Servo-host logs",
 			"Remove in-use flag on servo-host",
 			"Remove request to reboot is servo is good",
+			"Update DUT state",
 		},
 		Actions: map[string]*Action{
 			"servo_state_is_working": {
-				Docs:          []string{"check the servo's state is ServoStateWorking."},
+				Docs: []string{
+					"check the servo's state is ServoStateWorking.",
+				},
 				ExecName:      "servo_match_state",
 				ExecExtraArgs: []string{"state:WORKING"},
 			},
 			"Remove request to reboot is servo is good": {
 				Conditions: []string{
 					"is_not_flex_board",
+					"dut_servo_host_present",
 					"servo_state_is_working",
 				},
 				ExecName:               "cros_remove_reboot_request",
 				AllowFailAfterRecovery: true,
 			},
 			"Remove in-use flag on servo-host": {
-				Conditions:             []string{"is_not_flex_board"},
+				Conditions: []string{
+					"is_not_flex_board",
+					"dut_servo_host_present",
+				},
 				ExecName:               "cros_remove_servo_in_use",
 				AllowFailAfterRecovery: true,
 			},
@@ -102,7 +109,7 @@ func crosClosePlan() *Plan {
 				},
 				Conditions: []string{
 					"dut_servo_host_present",
-					"is_not_servo_v3",
+					"Is not servo_v3",
 				},
 				ExecName:               "cros_collect_servod_logs",
 				AllowFailAfterRecovery: true,
@@ -113,7 +120,7 @@ func crosClosePlan() *Plan {
 				},
 				Conditions: []string{
 					"dut_servo_host_present",
-					"is_not_servo_v3",
+					"Is not servo_v3",
 				},
 				ExecName: "cros_copy_file_to_log",
 				ExecExtraArgs: []string{
@@ -122,9 +129,14 @@ func crosClosePlan() *Plan {
 				},
 				AllowFailAfterRecovery: true,
 			},
-			"is_not_servo_v3": {
-				Conditions: []string{"is_servo_v3"},
-				ExecName:   "sample_fail",
+			"Is not servo_v3": {
+				Docs: []string{
+					"Verify that servo_v3 isn ot used in setup.",
+				},
+				Conditions: []string{
+					"is_servo_v3",
+				},
+				ExecName: "sample_fail",
 			},
 			"Update peripheral wifi state": {
 				Docs: []string{
@@ -134,6 +146,32 @@ func crosClosePlan() *Plan {
 					"wifi_router_host_present",
 				},
 				ExecName:               "update_peripheral_wifi_state",
+				AllowFailAfterRecovery: true,
+			},
+			"Check failure count": {
+				Docs: []string{
+					"Check if the number of times the recovery task ",
+					"has failed is greater than a threshold value or ",
+					"not.",
+				},
+				ExecName: "metrics_check_task_failures",
+				ExecExtraArgs: []string{
+					"task_name:recovery",
+					"repair_failed_count:49",
+				},
+			},
+			"Update DUT state": {
+				Docs: []string{
+					"Set the DUT state to the value passed in the ",
+					"extra args.",
+				},
+				Conditions: []string{
+					"Check failure count",
+				},
+				ExecName: "dut_set_state",
+				ExecExtraArgs: []string{
+					"state:needs_manual_repair",
+				},
 				AllowFailAfterRecovery: true,
 			},
 		},

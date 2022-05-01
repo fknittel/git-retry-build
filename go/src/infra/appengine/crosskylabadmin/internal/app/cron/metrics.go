@@ -20,12 +20,6 @@ import (
 )
 
 var (
-	updateDeviceConfigCronHandlerTick = metric.NewCounter(
-		"chromeos/crosskylabadmin/cron/update_device_config",
-		"UpdateDeviceConfig cron attempt",
-		nil,
-		field.Bool("success"),
-	)
 	pushBotsForAdminTasksCronHandlerTick = metric.NewCounter(
 		"chromeos/crosskylabadmin/cron/push_bots_for_admin_tasks",
 		"PushBotsForAdminTasks cron attempt",
@@ -41,18 +35,6 @@ var (
 	pushRepairJobsForLabstationsCronHandlerTick = metric.NewCounter(
 		"chromeos/crosskylabadmin/cron/push_repair_jobs_for_labstations",
 		"PushRepairJobsForLabstations cron attempt",
-		nil,
-		field.Bool("success"),
-	)
-	reportBotsCronHandlerTick = metric.NewCounter(
-		"chromeos/crosskylabadmin/cron/report_bots",
-		"ReportBots cron attempt",
-		nil,
-		field.Bool("success"),
-	)
-	reportInventoryCronHandlerTick = metric.NewCounter(
-		"chromeos/crosskylabadmin/cron/report_inventory",
-		"ReportInventory cron attempt",
 		nil,
 		field.Bool("success"),
 	)

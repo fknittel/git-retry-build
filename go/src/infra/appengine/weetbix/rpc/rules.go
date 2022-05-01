@@ -7,7 +7,6 @@ package rpc
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"time"
 
 	"go.chromium.org/luci/common/errors"
@@ -21,35 +20,29 @@ import (
 	"infra/appengine/weetbix/internal/bugs"
 	"infra/appengine/weetbix/internal/clustering"
 	"infra/appengine/weetbix/internal/clustering/rules"
-	"infra/appengine/weetbix/internal/config"
 	"infra/appengine/weetbix/internal/config/compiledcfg"
 	configpb "infra/appengine/weetbix/internal/config/proto"
 	pb "infra/appengine/weetbix/proto/v1"
 )
 
 // Rules implements pb.RulesServer.
-type Rules struct {
+type rulesServer struct {
 }
 
-// NewRules returns a new pb.RulesServer.
-func NewRules() pb.RulesServer {
+// NewRulesSever returns a new pb.RulesServer.
+func NewRulesSever() pb.RulesServer {
 	return &pb.DecoratedRules{
 		Prelude:  checkAllowedPrelude,
-		Service:  &Rules{},
+		Service:  &rulesServer{},
 		Postlude: gRPCifyAndLogPostlude,
 	}
 }
 
-var (
-	RuleNameRe    = regexp.MustCompile(`^projects/(` + config.ProjectRePattern + `)/rules/(` + rules.RuleIDRePattern + `)$`)
-	ProjectNameRe = regexp.MustCompile(`^projects/(` + config.ProjectRePattern + `)`)
-)
-
 // Retrieves a rule.
-func (*Rules) Get(ctx context.Context, req *pb.GetRuleRequest) (*pb.Rule, error) {
+func (*rulesServer) Get(ctx context.Context, req *pb.GetRuleRequest) (*pb.Rule, error) {
 	project, ruleID, err := parseRuleName(req.Name)
 	if err != nil {
-		return nil, validationError(err)
+		return nil, invalidArgumentError(err)
 	}
 
 	cfg, err := readProjectConfig(ctx, project)
@@ -69,10 +62,10 @@ func (*Rules) Get(ctx context.Context, req *pb.GetRuleRequest) (*pb.Rule, error)
 }
 
 // Lists rules.
-func (*Rules) List(ctx context.Context, req *pb.ListRulesRequest) (*pb.ListRulesResponse, error) {
+func (*rulesServer) List(ctx context.Context, req *pb.ListRulesRequest) (*pb.ListRulesResponse, error) {
 	project, err := parseProjectName(req.Parent)
 	if err != nil {
-		return nil, validationError(err)
+		return nil, invalidArgumentError(err)
 	}
 
 	cfg, err := readProjectConfig(ctx, project)
@@ -98,10 +91,10 @@ func (*Rules) List(ctx context.Context, req *pb.ListRulesRequest) (*pb.ListRules
 }
 
 // Creates a new rule.
-func (*Rules) Create(ctx context.Context, req *pb.CreateRuleRequest) (*pb.Rule, error) {
+func (*rulesServer) Create(ctx context.Context, req *pb.CreateRuleRequest) (*pb.Rule, error) {
 	project, err := parseProjectName(req.Parent)
 	if err != nil {
-		return nil, validationError(err)
+		return nil, invalidArgumentError(err)
 	}
 
 	cfg, err := readProjectConfig(ctx, project)
@@ -132,7 +125,7 @@ func (*Rules) Create(ctx context.Context, req *pb.CreateRuleRequest) (*pb.Rule, 
 	}
 
 	if err := validateBugAgainstConfig(cfg, r.BugID); err != nil {
-		return nil, validationError(err)
+		return nil, invalidArgumentError(err)
 	}
 
 	commitTime, err := span.ReadWriteTransaction(ctx, func(ctx context.Context) error {
@@ -151,13 +144,13 @@ func (*Rules) Create(ctx context.Context, req *pb.CreateRuleRequest) (*pb.Rule, 
 				r.IsManagingBug = false
 			}
 			if otherRule.Project == r.Project {
-				return validationError(fmt.Errorf("bug already used by a rule in the same project (%s/%s)", otherRule.Project, otherRule.RuleID))
+				return invalidArgumentError(fmt.Errorf("bug already used by a rule in the same project (%s/%s)", otherRule.Project, otherRule.RuleID))
 			}
 		}
 
 		err = rules.Create(ctx, r, user)
 		if err != nil {
-			return validationError(err)
+			return invalidArgumentError(err)
 		}
 		return nil
 	})
@@ -174,10 +167,10 @@ func (*Rules) Create(ctx context.Context, req *pb.CreateRuleRequest) (*pb.Rule, 
 }
 
 // Updates a rule.
-func (*Rules) Update(ctx context.Context, req *pb.UpdateRuleRequest) (*pb.Rule, error) {
+func (*rulesServer) Update(ctx context.Context, req *pb.UpdateRuleRequest) (*pb.Rule, error) {
 	project, ruleID, err := parseRuleName(req.Rule.GetName())
 	if err != nil {
-		return nil, validationError(err)
+		return nil, invalidArgumentError(err)
 	}
 
 	cfg, err := readProjectConfig(ctx, project)
@@ -221,7 +214,7 @@ func (*Rules) Update(ctx context.Context, req *pb.UpdateRuleRequest) (*pb.Rule, 
 					ID:     req.Rule.Bug.GetId(),
 				}
 				if err := validateBugAgainstConfig(cfg, bugID); err != nil {
-					return validationError(err)
+					return invalidArgumentError(err)
 				}
 
 				updatingBug = true // Triggers validation.
@@ -233,7 +226,7 @@ func (*Rules) Update(ctx context.Context, req *pb.UpdateRuleRequest) (*pb.Rule, 
 				updatingManaged = true // Triggers validation.
 				rule.IsManagingBug = req.Rule.IsManagingBug
 			default:
-				return validationError(fmt.Errorf("unsupported field mask: %s", path))
+				return invalidArgumentError(fmt.Errorf("unsupported field mask: %s", path))
 			}
 		}
 
@@ -249,7 +242,7 @@ func (*Rules) Update(ctx context.Context, req *pb.UpdateRuleRequest) (*pb.Rule, 
 			}
 			for _, otherRule := range bugRules {
 				if otherRule.Project == project && otherRule.RuleID != ruleID {
-					return validationError(fmt.Errorf("bug already used by a rule in the same project (%s/%s)", otherRule.Project, otherRule.RuleID))
+					return invalidArgumentError(fmt.Errorf("bug already used by a rule in the same project (%s/%s)", otherRule.Project, otherRule.RuleID))
 				}
 			}
 			for _, otherRule := range bugRules {
@@ -257,7 +250,7 @@ func (*Rules) Update(ctx context.Context, req *pb.UpdateRuleRequest) (*pb.Rule, 
 					if updatingManaged && rule.IsManagingBug {
 						// The caller explicitly requested an update of
 						// IsManagingBug to true, but we cannot do this.
-						return validationError(fmt.Errorf("bug already managed by a rule in another project (%s/%s)", otherRule.Project, otherRule.RuleID))
+						return invalidArgumentError(fmt.Errorf("bug already managed by a rule in another project (%s/%s)", otherRule.Project, otherRule.RuleID))
 					}
 					// If only changing the bug, avoid conflicts by silently
 					// making the bug not managed by this rule if there is
@@ -271,7 +264,7 @@ func (*Rules) Update(ctx context.Context, req *pb.UpdateRuleRequest) (*pb.Rule, 
 		}
 
 		if err := rules.Update(ctx, rule, updatePredicate, user); err != nil {
-			return validationError(err)
+			return invalidArgumentError(err)
 		}
 		updatedRule = rule
 		predicateUpdated = updatePredicate
@@ -291,13 +284,13 @@ func (*Rules) Update(ctx context.Context, req *pb.UpdateRuleRequest) (*pb.Rule, 
 }
 
 // LookupBug looks up the rule associated with the given bug.
-func (*Rules) LookupBug(ctx context.Context, req *pb.LookupBugRequest) (*pb.LookupBugResponse, error) {
+func (*rulesServer) LookupBug(ctx context.Context, req *pb.LookupBugRequest) (*pb.LookupBugResponse, error) {
 	bug := bugs.BugID{
 		System: req.System,
 		ID:     req.Id,
 	}
 	if err := bug.Validate(); err != nil {
-		return nil, validationError(err)
+		return nil, invalidArgumentError(err)
 	}
 	rules, err := rules.ReadByBug(span.Single(ctx), bug)
 	if err != nil {
@@ -311,28 +304,6 @@ func (*Rules) LookupBug(ctx context.Context, req *pb.LookupBugRequest) (*pb.Look
 	return &pb.LookupBugResponse{
 		Rules: ruleNames,
 	}, nil
-}
-
-// parseRuleName parses a rule resource name into its constituent ID parts.
-func parseRuleName(name string) (project string, ruleID string, err error) {
-	match := RuleNameRe.FindStringSubmatch(name)
-	if match == nil {
-		return "", "", errors.New("invalid rule name, expected format: projects/{project}/rules/{rule_id}")
-	}
-	return match[1], match[2], nil
-}
-
-// parseProjectName parses a project resource name into a project ID.
-func parseProjectName(name string) (project string, err error) {
-	match := ProjectNameRe.FindStringSubmatch(name)
-	if match == nil {
-		return "", errors.New("invalid project name, expected format: projects/{project}")
-	}
-	return match[1], nil
-}
-
-func ruleName(project string, ruleID string) string {
-	return fmt.Sprintf("projects/%s/rules/%s", project, ruleID)
 }
 
 func createRulePB(r *rules.FailureAssociationRule, cfg *configpb.ProjectConfig) *pb.Rule {
@@ -361,55 +332,6 @@ func ruleETag(rule *rules.FailureAssociationRule) string {
 	return fmt.Sprintf(`W/"%s"`, rule.LastUpdated.UTC().Format(time.RFC3339Nano))
 }
 
-func createAssociatedBugPB(b bugs.BugID, cfg *configpb.ProjectConfig) *pb.AssociatedBug {
-	// Fallback bug name and URL.
-	linkText := fmt.Sprintf("%s/%s", b.System, b.ID)
-	url := ""
-
-	switch b.System {
-	case bugs.MonorailSystem:
-		project, id, err := b.MonorailProjectAndID()
-		if err != nil {
-			// Fallback.
-			break
-		}
-		if project == cfg.Monorail.Project {
-			if cfg.Monorail.DisplayPrefix != "" {
-				linkText = fmt.Sprintf("%s/%s", cfg.Monorail.DisplayPrefix, id)
-			} else {
-				linkText = id
-			}
-		}
-		if cfg.Monorail.MonorailHostname != "" {
-			url = fmt.Sprintf("https://%s/p/%s/issues/detail?id=%s", cfg.Monorail.MonorailHostname, project, id)
-		}
-	default:
-		// Fallback.
-	}
-	return &pb.AssociatedBug{
-		System:   b.System,
-		Id:       b.ID,
-		LinkText: linkText,
-		Url:      url,
-	}
-}
-
-// readProjectConfig reads project config. This is intended for use in
-// top-level RPC handlers. The caller should directly return an eny errors
-// returned as the error of the RPC, the returned errors have been
-// properly annotated with an appstatus.
-func readProjectConfig(ctx context.Context, project string) (*compiledcfg.ProjectConfig, error) {
-	cfg, err := compiledcfg.Project(ctx, project, time.Time{})
-	if err != nil {
-		if err == compiledcfg.NotExistsErr {
-			return nil, validationError(errors.New("project does not exist in Weetbix"))
-		}
-		// GRPCifyAndLog will log this, and report an internal error to the caller.
-		return nil, errors.Annotate(err, "obtain project config").Err()
-	}
-	return cfg, nil
-}
-
 // validateBugAgainstConfig validates the specified bug is consistent with
 // the project configuration.
 func validateBugAgainstConfig(cfg *compiledcfg.ProjectConfig, bug bugs.BugID) error {
@@ -422,6 +344,8 @@ func validateBugAgainstConfig(cfg *compiledcfg.ProjectConfig, bug bugs.BugID) er
 		if project != cfg.Config.Monorail.Project {
 			return fmt.Errorf("bug not in expected monorail project (%s)", cfg.Config.Monorail.Project)
 		}
+	case bugs.BuganizerSystem:
+		// Buganizer bugs are permitted for all Weetbix projects.
 	default:
 		return fmt.Errorf("unsupported bug system: %s", bug.System)
 	}

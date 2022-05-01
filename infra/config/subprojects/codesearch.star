@@ -133,6 +133,17 @@ def chromium_genfiles(short_name, name, os = None, cpu_cores = None):
         triggered_by = "codesearch-gen-chromium-initiator",
     )
 
+def chromiumos_genfiles(name):
+    builder(
+        name = name,
+        executable = build.recipe("chromiumos_codesearch"),
+        builder_group_property_name = "builder_group",
+        execution_timeout = 9 * time.hour,
+        category = "gen",
+        # Gen builders are triggered by the initiator's recipe.
+        triggered_by = "codesearch-gen-chromiumos-initiator",
+    )
+
 # buildifier: disable=function-docstring
 def update_submodules_mirror(
         name,
@@ -178,6 +189,11 @@ chromium_genfiles("fch", "codesearch-gen-chromium-fuchsia")
 chromium_genfiles("lcr", "codesearch-gen-chromium-lacros")
 chromium_genfiles("lnx", "codesearch-gen-chromium-linux")
 chromium_genfiles(
+    "mac",
+    "codesearch-gen-chromium-mac",
+    os = "Mac-10.15",
+)
+chromium_genfiles(
     "win",
     "codesearch-gen-chromium-win",
     os = "Windows-10",
@@ -218,12 +234,14 @@ update_submodules_mirror(
 )
 
 # Runs every four hours (at predictable times).
-# TODO(gavinmak): Generalize and add an initializer when using more boards.
 builder(
-    name = "codesearch-gen-chromiumos-amd64-generic",
-    executable = build.recipe(name = "chromiumos_codesearch"),
+    name = "codesearch-gen-chromiumos-initiator",
+    executable = build.recipe("chromiumos_codesearch_initiator"),
     builder_group_property_name = "builder_group",
-    execution_timeout = 9 * time.hour,
-    category = "gen",
+    execution_timeout = 5 * time.hour,
+    category = "gen|init",
     schedule = "0 */4 * * *",
 )
+
+# TODO(crbug.com/1284439): Add more boards.
+chromiumos_genfiles("codesearch-gen-chromiumos-amd64-generic")

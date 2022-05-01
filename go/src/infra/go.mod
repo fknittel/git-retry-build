@@ -26,7 +26,7 @@ require (
 	github.com/alecthomas/participle/v2 v2.0.0-alpha7
 	github.com/andygrunwald/go-gerrit v0.0.0-20210726065827-cc4e14e40b5b
 	github.com/antlr/antlr4/runtime/Go/antlr v0.0.0-20210907221601-4f80a5e09cd0 // indirect
-	github.com/bazelbuild/remote-apis-sdks v0.0.0-20220301013006-36f659de32ef
+	github.com/bazelbuild/remote-apis-sdks v0.0.0-20220422144733-8780f11b1bb2
 	github.com/bmatcuk/doublestar v1.3.4
 	github.com/containerd/containerd v1.5.5 // indirect
 	github.com/danjacques/gofslock v0.0.0-20220131014315-6e321f4509c8
@@ -42,6 +42,7 @@ require (
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 	github.com/google/subcommands v1.2.0
 	github.com/google/uuid v1.3.0
+	github.com/googleapis/gax-go/v2 v2.1.1
 	github.com/googleapis/google-cloud-go-testing v0.0.0-20210719221736-1c9a4c676720
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/jdxcode/netrc v0.0.0-20210204082910-926c7f70242a
@@ -62,7 +63,7 @@ require (
 	github.com/pkg/profile v1.6.0
 	github.com/prometheus/common v0.30.0 // indirect
 	github.com/prometheus/procfs v0.7.3 // indirect
-	github.com/shirou/gopsutil v2.20.10-0.20201018091616-3202231bcdbd+incompatible
+	github.com/shirou/gopsutil v3.21.11+incompatible
 	github.com/smartystreets/goconvey v1.7.2
 	github.com/waigani/diffparser v0.0.0-20190828052634-7391f219313d
 	go.chromium.org/chromiumos/config/go v0.0.0-20211012171127-50826c369fec

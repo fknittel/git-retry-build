@@ -35,9 +35,6 @@ import (
 )
 
 const (
-	// gsCrosImageBucket is the base URL for the Google Storage bucket for
-	// ChromeOS image archives.
-	gsCrosImageBucket = "gs://chromeos-image-archive"
 	// tlwPort is default port used to run TLW on the drones.
 	tlwPort = 7151
 	// tlsPort is default port used to run TLS on the drones.
@@ -273,8 +270,20 @@ func (c *tlwClient) InitServod(ctx context.Context, req *tlw.InitServodRequest) 
 
 // dockerServodImageName provides image for servod when use container.
 func dockerServodImageName() string {
-	// TODO(otabek): Value has to come here from somewhere.
-	return "us-docker.pkg.dev/chromeos-partner-moblab/common-core/servod:release"
+	label := getEnv("SERVOD_CONTAINER_LABEL", "release")
+	registry := getEnv("REGISTRY_URI", "us-docker.pkg.dev/chromeos-partner-moblab/common-core")
+	return fmt.Sprintf("%s/servod:%s", registry, label)
+}
+
+// getEnv retrieves the value of the environment variable named by the key.
+// If retrieved value is empty return default value.
+func getEnv(key, defaultvalue string) string {
+	if key != "" {
+		if v := os.Getenv(key); v != "" {
+			return v
+		}
+	}
+	return defaultvalue
 }
 
 // createServodContainerArgs creates default args for servodContainer.
@@ -297,6 +306,8 @@ func (c *tlwClient) startServodContainer(ctx context.Context, dut *tlw.Dut, o *t
 	if err != nil {
 		return errors.Annotate(err, "start servod container").Err()
 	}
+	// Print all containers to know if something wrong.
+	d.PrintAll(ctx)
 	if up, err := d.IsUp(ctx, containerName); err != nil {
 		return errors.Annotate(err, "start servod container").Err()
 	} else if up {
@@ -491,37 +502,37 @@ func (c *tlwClient) CopyFileTo(ctx context.Context, req *tlw.CopyRequest) error 
 }
 
 // CopyFileFrom copies file from remote device to local.
-func (c *tlwClient) CopyFileFrom(ctx context.Context, req *tlw.CopyRequest) error {
-	if err := validateCopyRequest(req); err != nil {
-		return errors.Annotate(err, "copy file from").Err()
+func (c *tlwClient) CopyFileFrom(ctx context.Context, req *tlw.CopyRequest) (mainErr error) {
+	if vErr := validateCopyRequest(req); vErr != nil {
+		return errors.Annotate(vErr, "copy file from").Err()
 	}
-	dut, err := c.getDevice(ctx, req.Resource)
-	if err != nil {
-		return errors.Annotate(err, "copy file from %q", req.Resource).Err()
+	dut, dErr := c.getDevice(ctx, req.Resource)
+	if dErr != nil {
+		return errors.Annotate(dErr, "copy file from %q", req.Resource).Err()
 	}
 	// The containerized servo-host does not support SSH so we need use docker client.
 	if c.isServoHost(req.Resource) && isServodContainer(dut) {
-		d, err := c.dockerClient(ctx)
-		if err != nil {
-			return errors.Annotate(err, "copy file from %q", req.Resource).Err()
+		d, cErr := c.dockerClient(ctx)
+		if cErr != nil {
+			return errors.Annotate(cErr, "copy file from %q", req.Resource).Err()
 		}
 		containerName := servoContainerName(dut)
-		if up, err := d.IsUp(ctx, containerName); err != nil {
-			return errors.Annotate(err, "copy file from %q", req.Resource).Err()
+		if up, iErr := d.IsUp(ctx, containerName); iErr != nil {
+			return errors.Annotate(iErr, "copy file from %q", req.Resource).Err()
 		} else if !up {
 			log.Infof(ctx, "Copy file from: servod container %s is down!", containerName)
-			return errors.Annotate(err, "copy file from %q", req.Resource).Err()
+			return errors.Annotate(iErr, "copy file from %q", req.Resource).Err()
 		}
-		err = d.CopyFrom(ctx, containerName, req.PathSource, req.PathDestination)
+		mainErr = d.CopyFrom(ctx, containerName, req.PathSource, req.PathDestination)
 	} else {
 		// Use dirrect copy if hosts support SSH.
-		err = tlwio.CopyFileFrom(ctx, c.sshPool, &tlw.CopyRequest{
+		mainErr = tlwio.CopyFileFrom(ctx, c.sshPool, &tlw.CopyRequest{
 			Resource:        localproxy.BuildAddr(req.Resource),
 			PathSource:      req.PathSource,
 			PathDestination: req.PathDestination,
 		})
 	}
-	return errors.Annotate(err, "copy file from %q", req.Resource).Err()
+	return errors.Annotate(mainErr, "copy file from %q", req.Resource).Err()
 }
 
 // CopyDirectoryTo copies directory to remote device from local, recursively.
@@ -694,9 +705,7 @@ func (c *tlwClient) readInventory(ctx context.Context, name string) (resourceNam
 		resourceNames = []string{dut.Name}
 	case ufsAPI.GetDeviceDataResponse_RESOURCE_TYPE_SCHEDULING_UNIT:
 		su := ddrsp.GetSchedulingUnit()
-		for _, hostname := range su.GetMachineLSEs() {
-			resourceNames = append(resourceNames, hostname)
-		}
+		resourceNames = su.GetMachineLSEs()
 	default:
 		return resourceNames, errors.Reason("get device %q: unsupported type %q", name, ddrsp.GetResourceType()).Err()
 	}

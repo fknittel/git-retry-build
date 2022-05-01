@@ -13,13 +13,13 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 	. "go.chromium.org/luci/common/testing/assertions"
 	"go.chromium.org/luci/gae/impl/memory"
-	"go.chromium.org/luci/grpc/appstatus"
 	"go.chromium.org/luci/server/auth"
 	"go.chromium.org/luci/server/auth/authtest"
 	"go.chromium.org/luci/server/secrets"
 	"go.chromium.org/luci/server/secrets/testsecrets"
 	"go.chromium.org/luci/server/span"
 	"google.golang.org/grpc/codes"
+	grpcStatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -40,14 +40,15 @@ func TestRules(t *testing.T) {
 		// For user identification.
 		ctx = authtest.MockAuthConfig(ctx)
 		ctx = auth.WithState(ctx, &authtest.FakeState{
-			Identity: "user:someone@example.com",
+			Identity:       "user:someone@example.com",
+			IdentityGroups: []string{"weetbix-access"},
 		})
 		ctx = secrets.Use(ctx, &testsecrets.Store{})
 
 		// Provides datastore implementation needed for project config.
 		ctx = memory.Use(ctx)
 
-		srv := &Rules{}
+		srv := NewRulesSever()
 
 		ruleManagedBuilder := rules.NewRule(0).
 			WithProject(testProject).
@@ -72,12 +73,18 @@ func TestRules(t *testing.T) {
 			WithBug(bugs.BugID{System: "monorail", ID: "monorailproject/555"}).
 			WithBugManaged(true).
 			Build()
+		ruleBuganizer := rules.NewRule(5).
+			WithProject(testProject).
+			WithBug(bugs.BugID{System: "buganizer", ID: "666"}).
+			Build()
+
 		err := rules.SetRulesForTesting(ctx, []*rules.FailureAssociationRule{
 			ruleManaged,
 			ruleTwoProject,
 			ruleTwoProjectOther,
 			ruleUnmanagedOther,
 			ruleManagedOther,
+			ruleBuganizer,
 		})
 		So(err, ShouldBeNil)
 
@@ -93,52 +100,109 @@ func TestRules(t *testing.T) {
 		})
 		So(err, ShouldBeNil)
 
+		Convey("Unauthorised requests are rejected", func() {
+			// Ensure no access to weetbix-access.
+			ctx = auth.WithState(ctx, &authtest.FakeState{
+				Identity: "user:someone@example.com",
+				// Not a member of weetbix-access.
+				IdentityGroups: []string{"other-group"},
+			})
+
+			// Make some request (the request should not matter, as
+			// a common decorator is used for all requests.)
+			request := &pb.GetRuleRequest{
+				Name: fmt.Sprintf("projects/%s/rules/%s", ruleManaged.Project, ruleManaged.RuleID),
+			}
+
+			rule, err := srv.Get(ctx, request)
+			st, _ := grpcStatus.FromError(err)
+			So(st.Code(), ShouldEqual, codes.PermissionDenied)
+			So(st.Message(), ShouldEqual, "not a member of weetbix-access")
+			So(rule, ShouldBeNil)
+		})
 		Convey("Get", func() {
-			Convey("Exists", func() {
-				request := &pb.GetRuleRequest{
-					Name: fmt.Sprintf("projects/%s/rules/%s", ruleManaged.Project, ruleManaged.RuleID),
-				}
+			Convey("Rule exists", func() {
+				Convey("Read rule with Monorail bug", func() {
+					request := &pb.GetRuleRequest{
+						Name: fmt.Sprintf("projects/%s/rules/%s", ruleManaged.Project, ruleManaged.RuleID),
+					}
 
-				rule, err := srv.Get(ctx, request)
-				So(err, ShouldBeNil)
-				So(rule, ShouldResembleProto, createRulePB(ruleManaged, cfg))
+					rule, err := srv.Get(ctx, request)
+					So(err, ShouldBeNil)
+					So(rule, ShouldResembleProto, createRulePB(ruleManaged, cfg))
 
-				// Also verify createRulePB works as expected, so we do not need
-				// to test that again in later tests.
-				So(rule, ShouldResembleProto, &pb.Rule{
-					Name:           fmt.Sprintf("projects/%s/rules/%s", ruleManaged.Project, ruleManaged.RuleID),
-					Project:        ruleManaged.Project,
-					RuleId:         ruleManaged.RuleID,
-					RuleDefinition: ruleManaged.RuleDefinition,
-					Bug: &pb.AssociatedBug{
-						System:   "monorail",
-						Id:       "monorailproject/111",
-						LinkText: "mybug.com/111",
-						Url:      "https://monorailhost.com/p/monorailproject/issues/detail?id=111",
-					},
-					IsActive:      true,
-					IsManagingBug: true,
-					SourceCluster: &pb.ClusterId{
-						Algorithm: ruleManaged.SourceCluster.Algorithm,
-						Id:        ruleManaged.SourceCluster.ID,
-					},
-					CreateTime:              timestamppb.New(ruleManaged.CreationTime),
-					CreateUser:              ruleManaged.CreationUser,
-					LastUpdateTime:          timestamppb.New(ruleManaged.LastUpdated),
-					LastUpdateUser:          ruleManaged.LastUpdatedUser,
-					PredicateLastUpdateTime: timestamppb.New(ruleManaged.PredicateLastUpdated),
-					Etag:                    ruleETag(ruleManaged),
+					// Also verify createRulePB works as expected, so we do not need
+					// to test that again in later tests.
+					So(rule, ShouldResembleProto, &pb.Rule{
+						Name:           fmt.Sprintf("projects/%s/rules/%s", ruleManaged.Project, ruleManaged.RuleID),
+						Project:        ruleManaged.Project,
+						RuleId:         ruleManaged.RuleID,
+						RuleDefinition: ruleManaged.RuleDefinition,
+						Bug: &pb.AssociatedBug{
+							System:   "monorail",
+							Id:       "monorailproject/111",
+							LinkText: "mybug.com/111",
+							Url:      "https://monorailhost.com/p/monorailproject/issues/detail?id=111",
+						},
+						IsActive:      true,
+						IsManagingBug: true,
+						SourceCluster: &pb.ClusterId{
+							Algorithm: ruleManaged.SourceCluster.Algorithm,
+							Id:        ruleManaged.SourceCluster.ID,
+						},
+						CreateTime:              timestamppb.New(ruleManaged.CreationTime),
+						CreateUser:              ruleManaged.CreationUser,
+						LastUpdateTime:          timestamppb.New(ruleManaged.LastUpdated),
+						LastUpdateUser:          ruleManaged.LastUpdatedUser,
+						PredicateLastUpdateTime: timestamppb.New(ruleManaged.PredicateLastUpdated),
+						Etag:                    ruleETag(ruleManaged),
+					})
+				})
+				Convey("Read rule with Buganizer bug", func() {
+					request := &pb.GetRuleRequest{
+						Name: fmt.Sprintf("projects/%s/rules/%s", ruleBuganizer.Project, ruleBuganizer.RuleID),
+					}
+
+					rule, err := srv.Get(ctx, request)
+					So(err, ShouldBeNil)
+					So(rule, ShouldResembleProto, createRulePB(ruleBuganizer, cfg))
+
+					// Also verify createRulePB works as expected, so we do not need
+					// to test that again in later tests.
+					So(rule, ShouldResembleProto, &pb.Rule{
+						Name:           fmt.Sprintf("projects/%s/rules/%s", ruleBuganizer.Project, ruleBuganizer.RuleID),
+						Project:        ruleBuganizer.Project,
+						RuleId:         ruleBuganizer.RuleID,
+						RuleDefinition: ruleBuganizer.RuleDefinition,
+						Bug: &pb.AssociatedBug{
+							System:   "buganizer",
+							Id:       "666",
+							LinkText: "b/666",
+							Url:      "https://issuetracker.google.com/issues/666",
+						},
+						IsActive:      true,
+						IsManagingBug: true,
+						SourceCluster: &pb.ClusterId{
+							Algorithm: ruleBuganizer.SourceCluster.Algorithm,
+							Id:        ruleBuganizer.SourceCluster.ID,
+						},
+						CreateTime:              timestamppb.New(ruleBuganizer.CreationTime),
+						CreateUser:              ruleBuganizer.CreationUser,
+						LastUpdateTime:          timestamppb.New(ruleBuganizer.LastUpdated),
+						LastUpdateUser:          ruleBuganizer.LastUpdatedUser,
+						PredicateLastUpdateTime: timestamppb.New(ruleBuganizer.PredicateLastUpdated),
+						Etag:                    ruleETag(ruleBuganizer),
+					})
 				})
 			})
-			Convey("Not Exists", func() {
+			Convey("Rule does not exist", func() {
 				ruleID := strings.Repeat("00", 16)
 				request := &pb.GetRuleRequest{
 					Name: fmt.Sprintf("projects/%s/rules/%s", ruleManaged.Project, ruleID),
 				}
 
 				rule, err := srv.Get(ctx, request)
-				st, ok := appstatus.Get(err)
-				So(ok, ShouldBeTrue)
+				st, _ := grpcStatus.FromError(err)
 				So(st.Code(), ShouldEqual, codes.NotFound)
 				So(rule, ShouldBeNil)
 			})
@@ -150,6 +214,7 @@ func TestRules(t *testing.T) {
 			Convey("Non-Empty", func() {
 				rs := []*rules.FailureAssociationRule{
 					ruleManaged,
+					ruleBuganizer,
 					rules.NewRule(2).WithProject(testProject).Build(),
 					rules.NewRule(3).WithProject(testProject).Build(),
 					rules.NewRule(4).WithProject(testProject).Build(),
@@ -168,6 +233,7 @@ func TestRules(t *testing.T) {
 						createRulePB(rs[1], cfg),
 						createRulePB(rs[2], cfg),
 						createRulePB(rs[3], cfg),
+						createRulePB(rs[4], cfg),
 					},
 				}
 				sort.Slice(expected.Rules, func(i, j int) bool {
@@ -187,6 +253,20 @@ func TestRules(t *testing.T) {
 
 				expected := &pb.ListRulesResponse{}
 				So(response, ShouldResembleProto, expected)
+			})
+			Convey("With project not configured", func() {
+				request := &pb.ListRulesRequest{
+					Parent: "projects/not-exists",
+				}
+
+				// Run
+				response, err := srv.List(ctx, request)
+
+				// Verify
+				st, _ := grpcStatus.FromError(err)
+				So(st.Code(), ShouldEqual, codes.FailedPrecondition)
+				So(st.Message(), ShouldEqual, "project does not exist in Weetbix")
+				So(response, ShouldBeNil)
 			})
 		})
 		Convey("Update", func() {
@@ -240,6 +320,10 @@ func TestRules(t *testing.T) {
 				})
 				Convey("Predicate not updated", func() {
 					request.UpdateMask.Paths = []string{"bug"}
+					request.Rule.Bug = &pb.AssociatedBug{
+						System: "buganizer",
+						Id:     "99999999",
+					}
 
 					rule, err := srv.Update(ctx, request)
 					So(err, ShouldBeNil)
@@ -247,11 +331,12 @@ func TestRules(t *testing.T) {
 					storedRule, err := rules.Read(span.Single(ctx), testProject, ruleManaged.RuleID)
 					So(err, ShouldBeNil)
 
-					// Check the rule was updated.
+					// Check the rule was updated, but that predicate last
+					// updated time was NOT updated.
 					So(storedRule.LastUpdated, ShouldNotEqual, ruleManaged.LastUpdated)
 
 					expectedRule := ruleManagedBuilder.
-						WithBug(bugs.BugID{System: "monorail", ID: "monorailproject/2"}).
+						WithBug(bugs.BugID{System: "buganizer", ID: "99999999"}).
 						// Accept whatever the new last updated time is.
 						WithLastUpdated(storedRule.LastUpdated).
 						WithLastUpdatedUser("someone@example.com").
@@ -305,7 +390,7 @@ func TestRules(t *testing.T) {
 				// requerying.
 				rule, err := srv.Update(ctx, request)
 				So(rule, ShouldBeNil)
-				st, _ := appstatus.Get(err)
+				st, _ := grpcStatus.FromError(err)
 				So(st.Code(), ShouldEqual, codes.Aborted)
 			})
 			Convey("Rule does not exist", func() {
@@ -314,7 +399,7 @@ func TestRules(t *testing.T) {
 
 				rule, err := srv.Update(ctx, request)
 				So(rule, ShouldBeNil)
-				st, _ := appstatus.Get(err)
+				st, _ := grpcStatus.FromError(err)
 				So(st.Code(), ShouldEqual, codes.NotFound)
 			})
 			Convey("Validation error", func() {
@@ -323,7 +408,7 @@ func TestRules(t *testing.T) {
 
 					rule, err := srv.Update(ctx, request)
 					So(rule, ShouldBeNil)
-					st, _ := appstatus.Get(err)
+					st, _ := grpcStatus.FromError(err)
 					So(st.Code(), ShouldEqual, codes.InvalidArgument)
 					So(st.Message(), ShouldEqual, "bug not in expected monorail project (monorailproject)")
 				})
@@ -336,7 +421,7 @@ func TestRules(t *testing.T) {
 
 					rule, err := srv.Update(ctx, request)
 					So(rule, ShouldBeNil)
-					st, _ := appstatus.Get(err)
+					st, _ := grpcStatus.FromError(err)
 					So(st.Code(), ShouldEqual, codes.InvalidArgument)
 					So(st.Message(), ShouldEqual,
 						fmt.Sprintf("bug already used by a rule in the same project (%s/%s)",
@@ -354,7 +439,7 @@ func TestRules(t *testing.T) {
 
 					rule, err := srv.Update(ctx, request)
 					So(rule, ShouldBeNil)
-					st, _ := appstatus.Get(err)
+					st, _ := grpcStatus.FromError(err)
 					So(st.Code(), ShouldEqual, codes.InvalidArgument)
 					So(st.Message(), ShouldEqual,
 						fmt.Sprintf("bug already managed by a rule in another project (%s/%s)",
@@ -366,7 +451,7 @@ func TestRules(t *testing.T) {
 
 					rule, err := srv.Update(ctx, request)
 					So(rule, ShouldBeNil)
-					st, _ := appstatus.Get(err)
+					st, _ := grpcStatus.FromError(err)
 					So(st.Code(), ShouldEqual, codes.InvalidArgument)
 					So(st.Message(), ShouldStartWith, "rule definition is not valid")
 				})
@@ -469,6 +554,37 @@ func TestRules(t *testing.T) {
 					// Verify the returned rule matches our expectations.
 					So(rule, ShouldResembleProto, createRulePB(expectedRule, cfg))
 				})
+				Convey("Buganizer", func() {
+					request.Rule.Bug = &pb.AssociatedBug{
+						System: "buganizer",
+						Id:     "1111111111",
+					}
+
+					rule, err := srv.Create(ctx, request)
+					So(err, ShouldBeNil)
+
+					storedRule, err := rules.Read(span.Single(ctx), testProject, rule.RuleId)
+					So(err, ShouldBeNil)
+
+					expectedRule := expectedRuleBuilder.
+						// Accept the randomly generated rule ID.
+						WithRuleID(rule.RuleId).
+						WithBug(bugs.BugID{System: "buganizer", ID: "1111111111"}).
+						// Accept whatever CreationTime was assigned, as it
+						// is determined by Spanner commit time.
+						// Rule spanner data access code tests already validate
+						// this is populated correctly.
+						WithCreationTime(storedRule.CreationTime).
+						WithLastUpdated(storedRule.CreationTime).
+						WithPredicateLastUpdated(storedRule.CreationTime).
+						Build()
+
+					// Verify the rule was correctly created in the database.
+					So(storedRule, ShouldResemble, expectedRuleBuilder.Build())
+
+					// Verify the returned rule matches our expectations.
+					So(rule, ShouldResembleProto, createRulePB(expectedRule, cfg))
+				})
 			})
 			Convey("Validation error", func() {
 				Convey("Invalid bug monorail project", func() {
@@ -476,7 +592,7 @@ func TestRules(t *testing.T) {
 
 					rule, err := srv.Create(ctx, request)
 					So(rule, ShouldBeNil)
-					st, _ := appstatus.Get(err)
+					st, _ := grpcStatus.FromError(err)
 					So(st.Code(), ShouldEqual, codes.InvalidArgument)
 					So(st.Message(), ShouldEqual,
 						"bug not in expected monorail project (monorailproject)")
@@ -490,7 +606,7 @@ func TestRules(t *testing.T) {
 
 					rule, err := srv.Create(ctx, request)
 					So(rule, ShouldBeNil)
-					st, _ := appstatus.Get(err)
+					st, _ := grpcStatus.FromError(err)
 					So(st.Code(), ShouldEqual, codes.InvalidArgument)
 					So(st.Message(), ShouldEqual,
 						fmt.Sprintf("bug already used by a rule in the same project (%s/%s)",
@@ -502,7 +618,7 @@ func TestRules(t *testing.T) {
 
 					rule, err := srv.Create(ctx, request)
 					So(rule, ShouldBeNil)
-					st, _ := appstatus.Get(err)
+					st, _ := grpcStatus.FromError(err)
 					So(st.Code(), ShouldEqual, codes.InvalidArgument)
 					So(st.Message(), ShouldStartWith, "rule definition is not valid")
 				})

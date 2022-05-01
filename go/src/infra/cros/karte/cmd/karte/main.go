@@ -27,13 +27,17 @@ func newApplication() *cli.Application {
 			return gologger.StdConfig.Use(ctx)
 		},
 		Commands: []*subcommands.Command{
+			subcommands.Section("main API"),
 			kartecli.Backfill,
 			kartecli.CheckServer,
 			kartecli.CreateAction,
 			kartecli.ListActions,
 			kartecli.ListSwarmingTasks,
 			kartecli.PersistSingleAction,
+			kartecli.PersistActionRange,
 			kartecli.ExampleCreateUpdateAction,
+			subcommands.Section("cron"),
+			kartecli.CronPersistToBigquery,
 		},
 	}
 }

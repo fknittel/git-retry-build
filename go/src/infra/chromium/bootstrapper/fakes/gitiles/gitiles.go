@@ -18,7 +18,6 @@ import (
 	"go.chromium.org/luci/common/errors"
 	"go.chromium.org/luci/common/proto/git"
 	gitilespb "go.chromium.org/luci/common/proto/gitiles"
-	"go.chromium.org/luci/common/system/filesystem"
 	"go.chromium.org/luci/common/testing/testfs"
 	"google.golang.org/grpc"
 )
@@ -102,7 +101,11 @@ func (c *Client) Log(ctx context.Context, request *gitilespb.LogRequest, options
 	}
 	commitId, ok := project.Refs[request.Committish]
 	if !ok {
-		commitId = fmt.Sprintf("fake-revision|%s|%s|%s", c.hostname, request.Project, request.Committish)
+		if _, ok := project.Revisions[request.Committish]; ok {
+			commitId = request.Committish
+		} else {
+			commitId = fmt.Sprintf("fake-revision|%s|%s|%s", c.hostname, request.Project, request.Committish)
+		}
 	} else if commitId == "" {
 		return nil, errors.Reason("unknown ref %#v for project %#v on host %#v", request.Committish, request.Project, c.hostname).Err()
 	}
@@ -167,6 +170,20 @@ func (c *Client) DownloadFile(ctx context.Context, request *gitilespb.DownloadFi
 // instance is created and commits populated with the fake data. This git
 // instance then produces the diff.
 func (c *Client) DownloadDiff(ctx context.Context, request *gitilespb.DownloadDiffRequest, options ...grpc.CallOption) (*gitilespb.DownloadDiffResponse, error) {
+	getFilesFromHistory := func(history []*commit) map[string]string {
+		files := map[string]string{}
+		for i := len(history) - 1; i >= 0; i -= 1 {
+			for path, contents := range history[i].revision.Files {
+				if contents == nil {
+					delete(files, path)
+				} else {
+					files[path] = *contents
+				}
+			}
+		}
+		return files
+	}
+
 	history, err := c.getRevisionHistory(request.Project, request.Committish)
 	if err != nil {
 		return nil, err
@@ -189,32 +206,38 @@ func (c *Client) DownloadDiff(ctx context.Context, request *gitilespb.DownloadDi
 		git("commit", "--allow-empty", "-m", message)
 	}
 
-	files := map[string]string{}
-	for i := len(history) - 1; i > 0; i -= 1 {
-		for path, contents := range history[i].revision.Files {
-			if contents == nil {
-				delete(files, path)
-			} else {
-				files[path] = *contents
-			}
+	// For computing a diff, the relationship between the two commits isn't actually important.
+	// We'll just create a commit containing the files for the parent or base as appropriate,
+	// then create another commit with the files for committish and get a diff of HEAD vs HEAD^.
+	var baseFiles map[string]string
+	if request.Base == "" {
+		baseFiles = getFilesFromHistory(history[1:])
+		util.PanicOnError(testfs.Build(tmp, baseFiles))
+		commit(fmt.Sprintf("parent of committish %s", request.Committish))
+	} else {
+		baseHistory, err := c.getRevisionHistory(request.Project, request.Base)
+		if err != nil {
+			return nil, err
+		}
+		baseFiles := getFilesFromHistory(baseHistory)
+		util.PanicOnError(testfs.Build(tmp, baseFiles))
+		commit(fmt.Sprintf("base %s", request.Base))
+	}
+
+	files := getFilesFromHistory(history)
+	for path := range baseFiles {
+		if _, ok := files[path]; !ok {
+			f := filepath.Join(tmp, filepath.FromSlash(path))
+			util.PanicOnError(os.Remove(f))
 		}
 	}
 	util.PanicOnError(testfs.Build(tmp, files))
-	commit("parent commit")
+	commit(fmt.Sprintf("committish %s", request.Committish))
 
-	for path, contents := range history[0].revision.Files {
-		f := filepath.Join(tmp, filepath.FromSlash(path))
-		if contents != nil {
-			util.PanicOnError(filesystem.MakeDirs(filepath.Dir(f)))
-			util.PanicOnError(ioutil.WriteFile(f, []byte(*contents), 0644))
-		} else {
-			if _, ok := files[path]; ok {
-				util.PanicOnError(os.Remove(f))
-			}
-		}
+	args := []string{"diff", "HEAD^", "HEAD"}
+	if request.Path != "" {
+		args = append(args, "--", request.Path)
 	}
-	commit("target commit")
-
-	diff := git("diff", "HEAD^", "HEAD")
+	diff := git(args...)
 	return &gitilespb.DownloadDiffResponse{Contents: string(diff)}, nil
 }

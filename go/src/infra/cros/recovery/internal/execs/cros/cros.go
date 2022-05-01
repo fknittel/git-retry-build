@@ -13,9 +13,9 @@ import (
 
 	"go.chromium.org/luci/common/errors"
 
+	"infra/cros/recovery/internal/components/cros"
 	"infra/cros/recovery/internal/execs"
 	"infra/cros/recovery/internal/log"
-	"infra/cros/recovery/internal/retry"
 )
 
 const (
@@ -39,6 +39,9 @@ const (
 	extactReleaseBuilderPathCommand = "cat /etc/lsb-release | grep CHROMEOS_RELEASE_BUILDER_PATH"
 )
 
+// releaseBuildPattern matches only the release build line in /etc/lsb-release.
+var releaseBuildPattern = regexp.MustCompile(`CHROMEOS_RELEASE_BUILDER_PATH=([\w\W]*)`)
+
 // releaseBuildPath reads release build path from lsb-release.
 func releaseBuildPath(ctx context.Context, run execs.Runner) (string, error) {
 	// lsb-release is set of key=value so we need extract right part from it.
@@ -48,16 +51,15 @@ func releaseBuildPath(ctx context.Context, run execs.Runner) (string, error) {
 		return "", errors.Annotate(err, "release build path").Err()
 	}
 	log.Debugf(ctx, "Read value: %q.", output)
-	p, err := regexp.Compile("CHROMEOS_RELEASE_BUILDER_PATH=([\\w\\W]*)")
-	if err != nil {
-		return "", errors.Annotate(err, "release build path").Err()
-	}
-	parts := p.FindStringSubmatch(output)
+	parts := releaseBuildPattern.FindStringSubmatch(output)
 	if len(parts) < 2 {
 		return "", errors.Reason("release build path: fail to read value from %s", output).Err()
 	}
 	return strings.TrimSpace(parts[1]), nil
 }
+
+// uptimePattern is a decimal number, possibly containing a decimal point.
+var uptimePattern = regexp.MustCompile(`([\d.]{6,})`)
 
 // uptime returns uptime of resource.
 func uptime(ctx context.Context, run execs.Runner) (*time.Duration, error) {
@@ -71,11 +73,7 @@ func uptime(ctx context.Context, run execs.Runner) (*time.Duration, error) {
 		return nil, errors.Annotate(err, "uptime").Err()
 	}
 	log.Debugf(ctx, "Read value: %q.", out)
-	p, err := regexp.Compile("([\\d.]{6,})")
-	if err != nil {
-		return nil, errors.Annotate(err, "uptime").Err()
-	}
-	parts := p.FindStringSubmatch(out)
+	parts := uptimePattern.FindStringSubmatch(out)
 	if len(parts) < 2 {
 		return nil, errors.Reason("uptime: fail to read value from %s", out).Err()
 	}
@@ -83,58 +81,6 @@ func uptime(ctx context.Context, run execs.Runner) (*time.Duration, error) {
 	// Example: 683503.88s -> 189h51m43.88s
 	dur, err := time.ParseDuration(fmt.Sprintf("%ss", parts[1]))
 	return &dur, errors.Annotate(err, "get uptime").Err()
-}
-
-// IsPingable checks whether the resource is pingable
-// TODO: Migrate usage from components.
-func IsPingable(ctx context.Context, info *execs.ExecInfo, resourceName string, count int) error {
-	return info.RunArgs.Access.Ping(ctx, resourceName, count)
-}
-
-// IsNotPingable checks whether the resource is not pingable
-func IsNotPingable(ctx context.Context, info *execs.ExecInfo, resourceName string, count int) error {
-	if err := info.RunArgs.Access.Ping(ctx, resourceName, count); err != nil {
-		log.Debugf(ctx, "Resource %s is not pingble, but expected.", resourceName)
-		return nil
-	}
-	return errors.Reason("not pingable: is pingable").Err()
-}
-
-const (
-	pingAttemptInteval = 5 * time.Second
-	sshAttemptInteval  = 10 * time.Second
-)
-
-// WaitUntilPingable waiting resource to be pingable.
-// TODO: Migrate usage from components.
-func WaitUntilPingable(ctx context.Context, info *execs.ExecInfo, resourceName string, waitTime time.Duration, count int) error {
-	log.Debugf(ctx, "Start ping %q for the next %s.", resourceName, waitTime)
-	return retry.WithTimeout(ctx, pingAttemptInteval, waitTime, func() error {
-		return IsPingable(ctx, info, resourceName, count)
-	}, "wait to ping")
-}
-
-// WaitUntilNotPingable waiting resource to be not pingable.
-func WaitUntilNotPingable(ctx context.Context, info *execs.ExecInfo, resourceName string, waitTime time.Duration, count int) error {
-	return retry.WithTimeout(ctx, pingAttemptInteval, waitTime, func() error {
-		return IsNotPingable(ctx, info, resourceName, count)
-	}, "wait to be not pingable")
-}
-
-// IsSSHable checks whether the resource is sshable
-// TODO: Migrate usage from components.
-func IsSSHable(ctx context.Context, run execs.Runner) error {
-	_, err := run(ctx, time.Minute, "true")
-	return errors.Annotate(err, "is sshable").Err()
-}
-
-// WaitUntilSSHable waiting resource to be sshable.
-// TODO: Migrate usage from components.
-func WaitUntilSSHable(ctx context.Context, run execs.Runner, waitTime time.Duration) error {
-	log.Debugf(ctx, "Start SSH check for the next %s.", waitTime)
-	return retry.WithTimeout(ctx, sshAttemptInteval, waitTime, func() error {
-		return IsSSHable(ctx, run)
-	}, "wait to ssh access")
 }
 
 // hasOnlySingleLine determines if the given string is only one single line.
@@ -258,8 +204,6 @@ func BootID(ctx context.Context, run execs.Runner) (string, error) {
 }
 
 const (
-	// defaultPingRetryCount is the default ping retry count.
-	defaultPingRetryCount = 2
 	// waitDownRebootTime is the time the program will wait for the device to be down.
 	waitDownRebootTime = 120 * time.Second
 	// waitUpRebootTime is the time the program will wait for the device to be up after reboot.
@@ -269,17 +213,19 @@ const (
 // WaitForRestart will first wait the device to go down and then wait
 // for the device to come up.
 func WaitForRestart(ctx context.Context, info *execs.ExecInfo) error {
+	ping := info.DefaultPinger()
+	logger := info.NewLogger()
 	// wait for it to be down.
-	if waitDownErr := WaitUntilNotPingable(ctx, info, info.RunArgs.ResourceName, waitDownRebootTime, defaultPingRetryCount); waitDownErr != nil {
-		log.Debugf(ctx, "Wait For Restart: device shutdown failed.")
+	if waitDownErr := cros.WaitUntilNotPingable(ctx, waitDownRebootTime, cros.PingRetryInteval, cros.DefaultPingCount, ping, logger); waitDownErr != nil {
+		logger.Debugf("Wait For Restart: device shutdown failed.")
 		return errors.Annotate(waitDownErr, "wait for restart").Err()
 	}
 	// wait down for servo device is successful, then wait for device
 	// up.
-	if waitUpErr := WaitUntilPingable(ctx, info, info.RunArgs.ResourceName, waitUpRebootTime, defaultPingRetryCount); waitUpErr != nil {
+	if waitUpErr := cros.WaitUntilPingable(ctx, waitUpRebootTime, cros.PingRetryInteval, cros.DefaultPingCount, ping, logger); waitUpErr != nil {
 		return errors.Annotate(waitUpErr, "wait for restart").Err()
 	}
-	log.Infof(ctx, "Device is up.")
+	logger.Infof("Device is up.")
 	return nil
 }
 

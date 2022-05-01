@@ -23,7 +23,7 @@ const (
 	MultiValueSplitter = ","
 )
 
-// The map representing key-value pairs parsed from extra args in the
+// ParsedArgs is the map representing key-value pairs parsed from extra args in the
 // configuration.
 type ParsedArgs map[string]string
 
@@ -56,12 +56,12 @@ func (parsedArgs ParsedArgs) AsString(ctx context.Context, key, defaultValue str
 
 // AsStringSlice returns the value for the passed key as a slice of string.
 // If the key does not exist in the parsed arguments, an empty slice is returned.
-func (parsedArgs ParsedArgs) AsStringSlice(ctx context.Context, key string) []string {
+func (parsedArgs ParsedArgs) AsStringSlice(ctx context.Context, key string, defaultValue []string) []string {
 	value := parsedArgs.AsString(ctx, key, "")
 	if len(value) > 0 {
 		return strings.Split(value, MultiValueSplitter)
 	}
-	return make([]string, 0)
+	return defaultValue
 }
 
 // AsInt returns the value for the passed key as a int.
@@ -109,7 +109,13 @@ func (parsedArgs ParsedArgs) AsDuration(ctx context.Context, key string, default
 	return defaultDuration
 }
 
-// ParseActionArgs returns parsed action arguments with default splitter.
+// Has returns true if key is found.
+func (parsedArgs ParsedArgs) Has(key string) bool {
+	_, ok := parsedArgs[key]
+	return ok
+}
+
+// GetActionArgs returns parsed action arguments with default splitter.
 func (ei *ExecInfo) GetActionArgs(ctx context.Context) ParsedArgs {
 	return ParseActionArgs(ctx, ei.ActionArgs, DefaultSplitter)
 }

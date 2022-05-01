@@ -168,8 +168,8 @@ func (tc *TaskCreator) VerifyTask(ctx context.Context, serviceAccount, host stri
 	return tc.schedule(ctx, tc.repairVerifyTaskRequest("admin_verify", "verify", serviceAccount, host, expirationSec, 90*60, cmd, logDogURL))
 }
 
-// AuditTask creates admin_audit task for particular DUT
-func (tc *TaskCreator) AuditTask(ctx context.Context, serviceAccount, host string, expirationSec int, cmd []string, logDogURL string) (*TaskInfo, error) {
+// LegacyAuditTask creates admin_audit task for particular DUT
+func (tc *TaskCreator) LegacyAuditTask(ctx context.Context, serviceAccount, host string, expirationSec int, cmd []string, logDogURL string) (*TaskInfo, error) {
 	return tc.schedule(ctx, tc.repairVerifyTaskRequest("admin_audit", "audit", serviceAccount, host, expirationSec, 8*60*60, cmd, logDogURL))
 }
 

@@ -17,28 +17,28 @@
 pins:
 - image: docker.io/library/ubuntu
   tag: "14.04"
-  digest: sha256:60840958b25b5947b11d7a274274dc48ab32a2f5d18527f5dae2962b64269a3a
+  digest: sha256:96a36dd3bcd8f149fa9874c4e28c35c01f715b3e5f8f1a8e06b45887619bf43b
 - image: docker.io/library/ubuntu
   tag: "16.04"
-  digest: sha256:0f71fa8d4d2d4292c3c617fda2b36f6dabe5c8b6e34c3dc5b0d17d4e704bd39c
+  digest: sha256:20858ebbc96215d6c3c574f781133ebffdc7c18d98af4f294cc4c04871a6fe61
 - image: docker.io/library/ubuntu
   tag: "18.04"
-  digest: sha256:d8ac28b7bec51664c6b71a9dd1d8f788127ff310b8af30820560973bcfc605a0
+  digest: sha256:d21b6ba9e19feffa328cb3864316e6918e30acfd55e285b5d3df1d8ca3c7fd3f
 - image: docker.io/library/ubuntu
   tag: "20.04"
-  digest: sha256:bea6d19168bbfd6af8d77c2cc3c572114eb5d113e6f422573c93cb605a0e2ffb
+  digest: sha256:47f14534bda344d9fe6ffd6effb95eefe579f4be0d508b7445cf77f61a0e5724
 - image: docker.io/library/ubuntu
   tag: focal
-  digest: sha256:bea6d19168bbfd6af8d77c2cc3c572114eb5d113e6f422573c93cb605a0e2ffb
+  digest: sha256:47f14534bda344d9fe6ffd6effb95eefe579f4be0d508b7445cf77f61a0e5724
 - image: docker.io/library/ubuntu
   tag: xenial
-  digest: sha256:0f71fa8d4d2d4292c3c617fda2b36f6dabe5c8b6e34c3dc5b0d17d4e704bd39c
+  digest: sha256:20858ebbc96215d6c3c574f781133ebffdc7c18d98af4f294cc4c04871a6fe61
 - image: gcr.io/distroless/static
   tag: latest
   digest: sha256:d6fa9db9548b5772860fecddb11d84f9ebd7e0321c0cb3c02870402680cc315f
 - image: mcr.microsoft.com/windows/nanoserver
   tag: "1809"
-  digest: sha256:e508123972ca40c7662658ee1893a8d20f44a9dcd49be3ffa9dec559e525b71d
+  digest: sha256:62a8d022600141cd93d7e74cb190de58c9ad273ca238424028af88ad46495ca7
 - image: mcr.microsoft.com/windows/servercore
   tag: ltsc2019
-  digest: sha256:33d7abef52e917a19145873e9ed487055cb55ce3ccf3056ea189b0eb5e4e3683
+  digest: sha256:8b98b3d621f5e6edc3639c7e90f63473c8f717a01e2a0c65b122fae827bd1c5a

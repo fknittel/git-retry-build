@@ -20,13 +20,6 @@ import (
 )
 
 const (
-	// PROVISION_FAILED - A flag file to indicate provision failures.  The
-	// file is created at the start of any AU procedure (see
-	// `ChromiumOSProvisioner._prepare_host()`).  The file's location in
-	// stateful means that on successful update it will be removed.  Thus, if
-	// this file exists, it indicates that we've tried and failed in a
-	// previous attempt to update.
-	provisionFailed = "/var/tmp/provision_failed"
 	// TODO (vkjoshi@): Migrate the constants (such as
 	// MinimumBatteryLevel) and helper functions from
 	// internal/execs/cros package to internal/components/cros. Bug
@@ -38,17 +31,17 @@ const (
 
 // pingExec verifies the DUT is pingable.
 func pingExec(ctx context.Context, info *execs.ExecInfo) error {
-	return WaitUntilPingable(ctx, info, info.RunArgs.ResourceName, info.ActionTimeout, 2)
+	return cros.WaitUntilPingable(ctx, info.ActionTimeout, cros.PingRetryInteval, 2, info.DefaultPinger(), info.NewLogger())
 }
 
 // sshExec verifies ssh access to the current plan's device (named by the default resource name).
 func sshExec(ctx context.Context, info *execs.ExecInfo) error {
-	return WaitUntilSSHable(ctx, info.DefaultRunner(), info.ActionTimeout)
+	return cros.WaitUntilSSHable(ctx, info.ActionTimeout, cros.SSHRetryInteval, info.DefaultRunner(), info.NewLogger())
 }
 
 // sshDUTExec verifies ssh access to the DUT.
 func sshDUTExec(ctx context.Context, info *execs.ExecInfo) error {
-	return WaitUntilSSHable(ctx, info.NewRunner(info.RunArgs.DUT.Name), info.ActionTimeout)
+	return cros.WaitUntilSSHable(ctx, info.ActionTimeout, cros.SSHRetryInteval, info.NewRunner(info.RunArgs.DUT.Name), info.NewLogger())
 }
 
 // rebootExec reboots the cros DUT.
@@ -201,20 +194,6 @@ func hasCriticalKernelErrorExec(ctx context.Context, info *execs.ExecInfo) error
 	return nil
 }
 
-// isLastProvisionSuccessfulExec confirms that the DUT successfully finished its last provision job.
-//
-// At the start of any update (e.g. for a Provision job), the code creates a marker file named `PROVISION_FAILED`.
-// The file is located in a part of the stateful partition that will be removed if an update finishes successfully.
-// Thus, the presence of the file indicates that a prior update failed.
-// The verifier tests for the existence of the marker file and fails if it still exists.
-func isLastProvisionSuccessfulExec(ctx context.Context, info *execs.ExecInfo) error {
-	run := info.DefaultRunner()
-	if _, err := run(ctx, time.Minute, fmt.Sprintf("test -f %s", provisionFailed)); err == nil {
-		return errors.Annotate(err, "last provision successful: last provision on this DUT failed").Err()
-	}
-	return nil
-}
-
 // isNotVirtualMachineExec confirms that the given DUT is not a virtual device.
 func isNotVirtualMachineExec(ctx context.Context, info *execs.ExecInfo) error {
 	run := info.DefaultRunner()
@@ -272,7 +251,7 @@ func isGscToolPresentExec(ctx context.Context, info *execs.ExecInfo) error {
 // The actionArgs should be in the format of ["tools:dfu-programmer,python,..."]
 func isToolPresentExec(ctx context.Context, info *execs.ExecInfo) error {
 	toolMap := info.GetActionArgs(ctx)
-	toolNames := toolMap.AsStringSlice(ctx, "tools")
+	toolNames := toolMap.AsStringSlice(ctx, "tools", nil)
 	if len(toolNames) == 0 {
 		return errors.Reason("tool present: tools argument is empty or not provided").Err()
 	}
@@ -400,7 +379,6 @@ func init() {
 	execs.Register("cros_is_file_system_writable", isFileSystemWritableExec)
 	execs.Register("cros_has_python_interpreter_working", hasPythonInterpreterExec)
 	execs.Register("cros_has_critical_kernel_error", hasCriticalKernelErrorExec)
-	execs.Register("cros_is_last_provision_successful", isLastProvisionSuccessfulExec)
 	execs.Register("cros_is_not_virtual_machine", isNotVirtualMachineExec)
 	execs.Register("cros_wait_for_system", waitForSystemExec)
 	execs.Register("cros_is_gsc_tool_present", isGscToolPresentExec)

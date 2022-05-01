@@ -46,7 +46,6 @@ class SwarmbucketApiTest(testing.EndpointsTestCase):
         '''
           name: "luci.chromium.try"
           swarming {
-            hostname: "swarming.example.com"
             builders {
               name: "linux"
               swarming_host: "swarming.example.com"
@@ -133,6 +132,7 @@ class SwarmbucketApiTest(testing.EndpointsTestCase):
         logdog=dict(hostname='logdog.example.com'),
         experiment=dict(
             experiments=[
+                dict(name=experiments.BBAGENT_DOWNLOAD_CIPD, default_value=100),
                 dict(name=experiments.BBAGENT_GET_BUILD),
                 dict(name=experiments.CANARY),
                 dict(name=experiments.NON_PROD),
