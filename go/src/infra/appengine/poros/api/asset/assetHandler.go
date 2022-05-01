@@ -82,10 +82,11 @@ func (e *AssetHandler) Delete(ctx context.Context, req *DeleteAssetRequest) (*em
 
 // Lists all Assets.
 func (e *AssetHandler) List(ctx context.Context, in *ListAssetsRequest) (*ListAssetsResponse, error) {
-	// TODO: crbug/1318606 - Implement Asset List functionality with filter & paging.
+	// TODO: crbug/1318606 - Implement Asset List functionality with filter,
+	// orderby & paging.
 	assets := []proto.AssetEntity{}
 	res := &ListAssetsResponse{}
-	query := datastore.NewQuery("AssetEntity").Order("created_at")
+	query := datastore.NewQuery("AssetEntity")
 	err := datastore.GetAll(ctx, query, &assets)
 	if err != nil {
 		return nil, err
