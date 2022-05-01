@@ -16,6 +16,12 @@
 # Source for the frontend
 /frontend
 
+# Ignore vscode settings to gae
+.vscode
+
+# Ignore node modules dependencies
+node_modules
+
 # Binaries for programs and plugins
 *.exe
 *.exe~
